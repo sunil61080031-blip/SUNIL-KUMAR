@@ -1,0 +1,6 @@
+{
+  "name": "Coaching Student Data Management System",
+  "description": "Coaching Student Data Management System and official portal for Shiksha Niketan Tuition Centre in Gadhiya, Bhaptiyahi, Supaul, Bihar. Managed by Sunil Kumar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
