@@ -471,16 +471,35 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
     village: 'Ward No. 08, Gadhiya',
     enrollmentDate: '2026-07-01',
     enrollmentStatus: 'Enrolled',
+    academicSession: '2026-27',
     baseMonthlyFee: 600,
     discountType: 'Merit Scholarship (20%)',
     discountPercent: 20,
     isCharitySeat: false,
     netMonthlyFee: 480,
     paidAmount: 1640,
+    previousYearPendingFee: 900,
+    previousYearClearedAmount: 450,
+    promotedFromClass: 'Class 9th (High School Foundation)',
+    lastPromotionDate: '2026-06-25',
+    promotionHistory: [
+      {
+        id: 'prom-101',
+        date: '2026-06-25',
+        fromClass: 'Class 9th (High School Foundation)',
+        fromClassNum: 9,
+        toClass: 'Class 10th (Matric Target)',
+        toClassNum: 10,
+        session: '2026-27',
+        carryForwardDues: 900,
+        remarks: 'Promoted with Class 9th Merit Rank #1 (20% scholarship retained)'
+      }
+    ],
     feePayments: [
-      { id: 'fp-1', receiptNo: 'REC-2026-101', date: '2026-07-02', monthLabel: 'Registration + July 2026', amount: 680, mode: 'Cash' },
-      { id: 'fp-2', receiptNo: 'REC-2026-148', date: '2026-08-05', monthLabel: 'August 2026', amount: 480, mode: 'UPI / Online' },
-      { id: 'fp-3', receiptNo: 'REC-2026-192', date: '2026-09-04', monthLabel: 'September 2026', amount: 480, mode: 'Cash' }
+      { id: 'fp-1', receiptNo: 'REC-2026-101', date: '2026-07-02', monthLabel: 'Registration + July 2026', amount: 680, mode: 'Cash', session: '2026-27' },
+      { id: 'fp-2', receiptNo: 'REC-2026-148', date: '2026-08-05', monthLabel: 'August 2026', amount: 480, mode: 'UPI / Online', session: '2026-27' },
+      { id: 'fp-3', receiptNo: 'REC-2026-192', date: '2026-09-04', monthLabel: 'September 2026', amount: 480, mode: 'Cash', session: '2026-27' },
+      { id: 'fp-1b', receiptNo: 'PRV-2025-88', date: '2026-07-15', monthLabel: 'Prev Year (2025-26) Arrear Part-Payment', amount: 450, mode: 'Cash', session: '2025-26', isPreviousYearClearance: true }
     ],
     attendanceRecords: [
       { id: 'att-101', date: '2026-11-05', status: 'Present', subjectTopic: 'Mathematics — Trigonometry Heights & Distances', shift: 'Morning Batch', markedBy: 'Sunil Kumar', remarks: 'Solved all 10 board questions in class' },
@@ -510,15 +529,33 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
     village: 'Bhaptiyahi Bazar',
     enrollmentDate: '2026-08-01',
     enrollmentStatus: 'Enrolled',
+    academicSession: '2026-27',
     baseMonthlyFee: 850,
     discountType: 'Sibling (10%)',
     discountPercent: 10,
     isCharitySeat: false,
     netMonthlyFee: 765,
     paidAmount: 1780,
+    previousYearPendingFee: 1400,
+    previousYearClearedAmount: 0,
+    promotedFromClass: 'Class 11th (I.Sc / I.A Foundation)',
+    lastPromotionDate: '2026-07-28',
+    promotionHistory: [
+      {
+        id: 'prom-102',
+        date: '2026-07-28',
+        fromClass: 'Class 11th (I.Sc / I.A Foundation)',
+        fromClassNum: 11,
+        toClass: 'Class 12th (Intermediate Board)',
+        toClassNum: 12,
+        session: '2026-27',
+        carryForwardDues: 1400,
+        remarks: 'Promoted to Class 12th Board batch; 2 months Class 11th fee carried forward'
+      }
+    ],
     feePayments: [
-      { id: 'fp-4', receiptNo: 'REC-2026-205', date: '2026-08-03', monthLabel: 'Registration + August 2026', amount: 1015, mode: 'UPI / Online' },
-      { id: 'fp-5', receiptNo: 'REC-2026-260', date: '2026-09-06', monthLabel: 'September 2026', amount: 765, mode: 'Cash' }
+      { id: 'fp-4', receiptNo: 'REC-2026-205', date: '2026-08-03', monthLabel: 'Registration + August 2026', amount: 1015, mode: 'UPI / Online', session: '2026-27' },
+      { id: 'fp-5', receiptNo: 'REC-2026-260', date: '2026-09-06', monthLabel: 'September 2026', amount: 765, mode: 'Cash', session: '2026-27' }
     ],
     attendanceRecords: [
       { id: 'att-201', date: '2026-11-05', status: 'Present', subjectTopic: 'Calculus — Definite Integration & Properties', shift: 'Night Class', markedBy: 'Rakesh Ranjan Verma', remarks: 'Active participation in numericals' },
@@ -546,6 +583,7 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
     village: 'Gadhiya Ward No. 03',
     enrollmentDate: '2026-07-10',
     enrollmentStatus: 'Enrolled',
+    academicSession: '2026-27',
     baseMonthlyFee: 600,
     discountType: 'Full Charity / Free Education (100%)',
     discountPercent: 100,
@@ -553,8 +591,12 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
     charityNote: 'Approved by Director Sunil Kumar under 100% Free Charity Quota.',
     netMonthlyFee: 0,
     paidAmount: 0,
+    previousYearPendingFee: 0,
+    previousYearClearedAmount: 0,
+    promotedFromClass: 'Class 9th (High School Foundation)',
+    lastPromotionDate: '2026-07-01',
     feePayments: [
-      { id: 'fp-6', receiptNo: 'CHR-2026-001', date: '2026-07-10', monthLabel: 'Full Session 100% Charity Waiver', amount: 0, mode: 'Charity Waiver' }
+      { id: 'fp-6', receiptNo: 'CHR-2026-001', date: '2026-07-10', monthLabel: 'Full Session 100% Charity Waiver', amount: 0, mode: 'Charity Waiver', session: '2026-27' }
     ],
     attendanceRecords: [
       { id: 'att-301', date: '2026-11-05', status: 'Present', subjectTopic: 'BSEB Matric Model Paper Set-04 Solution', shift: 'Night Class', markedBy: 'Sunil Kumar', remarks: '100% attendance streak this month' },
@@ -583,15 +625,34 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
     disenrollmentDate: '2026-08-20',
     reEnrollmentDate: '2026-10-05',
     enrollmentStatus: 'Re-enrolled',
+    academicSession: '2026-27',
     baseMonthlyFee: 450,
     discountType: 'None',
     discountPercent: 0,
     isCharitySeat: false,
     netMonthlyFee: 450,
     paidAmount: 1500,
+    previousYearPendingFee: 800,
+    previousYearClearedAmount: 400,
+    promotedFromClass: 'Class 7th (Middle School Batch)',
+    lastPromotionDate: '2026-06-10',
+    promotionHistory: [
+      {
+        id: 'prom-104',
+        date: '2026-06-10',
+        fromClass: 'Class 7th (Middle School Batch)',
+        fromClassNum: 7,
+        toClass: 'Class 8th (Middle School Batch)',
+        toClassNum: 8,
+        session: '2026-27',
+        carryForwardDues: 800,
+        remarks: 'Promoted from Class 7th; Rs 400 cleared in June 2026'
+      }
+    ],
     feePayments: [
-      { id: 'fp-7', receiptNo: 'REC-2026-088', date: '2026-06-12', monthLabel: 'Reg + June & July 2026', amount: 1050, mode: 'Cash' },
-      { id: 'fp-8', receiptNo: 'REC-2026-310', date: '2026-10-05', monthLabel: 'October 2026 (Re-Enrollment)', amount: 450, mode: 'Cash' }
+      { id: 'fp-7', receiptNo: 'REC-2026-088', date: '2026-06-12', monthLabel: 'Reg + June & July 2026', amount: 1050, mode: 'Cash', session: '2026-27' },
+      { id: 'fp-8', receiptNo: 'REC-2026-310', date: '2026-10-05', monthLabel: 'October 2026 (Re-Enrollment)', amount: 450, mode: 'Cash', session: '2026-27' },
+      { id: 'fp-8b', receiptNo: 'PRV-2025-44', date: '2026-06-15', monthLabel: 'Prev Year (2025-26) Class 7th Dues Part-Payment', amount: 400, mode: 'Cash', session: '2025-26', isPreviousYearClearance: true }
     ],
     attendanceRecords: [
       { id: 'att-401', date: '2026-11-05', status: 'Present', subjectTopic: 'Mathematics — Linear Equations in One Variable', shift: 'Morning Batch', markedBy: 'Vikash Kumar Jha' },
@@ -618,6 +679,7 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
     enrollmentDate: '2026-08-01',
     disenrollmentDate: '2026-10-15',
     enrollmentStatus: 'Disenrolled',
+    academicSession: '2026-27',
     baseMonthlyFee: 250,
     discountType: 'Partial Charity Aid (50%)',
     discountPercent: 50,
@@ -625,8 +687,10 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
     charityNote: '50% Welfare Aid',
     netMonthlyFee: 125,
     paidAmount: 350,
+    previousYearPendingFee: 0,
+    previousYearClearedAmount: 0,
     feePayments: [
-      { id: 'fp-9', receiptNo: 'REC-2026-219', date: '2026-08-01', monthLabel: 'Reg + Aug & Sep 2026', amount: 350, mode: 'Cash' }
+      { id: 'fp-9', receiptNo: 'REC-2026-219', date: '2026-08-01', monthLabel: 'Reg + Aug & Sep 2026', amount: 350, mode: 'Cash', session: '2026-27' }
     ],
     attendanceRecords: [
       { id: 'att-501', date: '2026-10-14', status: 'Present', subjectTopic: 'English Phonics (A-Z) & Hindi Varnamala', shift: 'Morning Batch', markedBy: 'Priyanka Kumari' },
@@ -634,5 +698,107 @@ export const INITIAL_STUDENTS: StudentRecord[] = [
       { id: 'att-503', date: '2026-10-12', status: 'Authorized Leave', subjectTopic: 'Drawing, Colors & Rhymes Recitation', shift: 'Morning Batch', markedBy: 'Priyanka Kumari', remarks: 'Medical leave notified by parent' }
     ],
     notes: 'Temporarily disenrolled due to health reasons; eligible for instant re-enrollment.'
+  },
+  {
+    id: 'stu-6',
+    studentIdCode: 'STU-2026-006',
+    studentName: 'Ananya Kumari',
+    parentName: 'Pramod Kumar Thakur',
+    phone: '9470112288',
+    classLevel: 'Class 5th (Primary Batch)',
+    classNum: 5,
+    batchId: 'b-primary-a',
+    batchCode: 'BATCH-A05',
+    shift: 'Afternoon Batch',
+    centreId: 'centre-1',
+    board: 'BSEB (Bihar Board)',
+    village: 'Gadhiya Ward No. 05',
+    enrollmentDate: '2026-07-05',
+    enrollmentStatus: 'Enrolled',
+    academicSession: '2026-27',
+    baseMonthlyFee: 350,
+    discountType: 'None',
+    discountPercent: 0,
+    isCharitySeat: false,
+    netMonthlyFee: 350,
+    paidAmount: 1150,
+    previousYearPendingFee: 300,
+    previousYearClearedAmount: 300,
+    promotedFromClass: 'Class 4th (Primary Batch)',
+    lastPromotionDate: '2026-06-28',
+    promotionHistory: [
+      {
+        id: 'prom-106',
+        date: '2026-06-28',
+        fromClass: 'Class 4th (Primary Batch)',
+        fromClassNum: 4,
+        toClass: 'Class 5th (Primary Batch)',
+        toClassNum: 5,
+        session: '2026-27',
+        carryForwardDues: 300,
+        remarks: 'Promoted to Class 5th Navodaya & Primary Foundation Batch'
+      }
+    ],
+    feePayments: [
+      { id: 'fp-10', receiptNo: 'REC-2026-112', date: '2026-07-05', monthLabel: 'Reg + July & August 2026', amount: 800, mode: 'Cash', session: '2026-27' },
+      { id: 'fp-11', receiptNo: 'REC-2026-231', date: '2026-09-08', monthLabel: 'September 2026', amount: 350, mode: 'Cash', session: '2026-27' },
+      { id: 'fp-11b', receiptNo: 'PRV-2025-95', date: '2026-07-10', monthLabel: 'Prev Year (2025-26) Class 4th Full Clearance', amount: 300, mode: 'Cash', session: '2025-26', isPreviousYearClearance: true }
+    ],
+    attendanceRecords: [
+      { id: 'att-601', date: '2026-11-05', status: 'Present', subjectTopic: 'Mathematics — Fractions, Decimals & LCM/HCF', shift: 'Afternoon Batch', markedBy: 'Priyanka Kumari' },
+      { id: 'att-602', date: '2026-11-04', status: 'Present', subjectTopic: 'English Reading & Word Meaning Drill', shift: 'Afternoon Batch', markedBy: 'Priyanka Kumari' }
+    ],
+    notes: 'Preparing for Class 6th Jawahar Navodaya Vidyalaya entrance alongside Class 5th.'
+  },
+  {
+    id: 'stu-7',
+    studentIdCode: 'STU-2026-007',
+    studentName: 'Nitesh Kumar झा (Jha)',
+    parentName: 'Subhash Chandra Jha',
+    phone: '9835445566',
+    classLevel: 'Class 11th (I.Sc / I.A Foundation)',
+    classNum: 11,
+    batchId: 'b-11-e',
+    batchCode: 'BATCH-E11',
+    shift: 'Evening Batch',
+    centreId: 'centre-2',
+    board: 'BSEB (Bihar Board)',
+    village: 'Bhaptiyahi Ward No. 02',
+    enrollmentDate: '2026-07-15',
+    enrollmentStatus: 'Enrolled',
+    academicSession: '2026-27',
+    baseMonthlyFee: 750,
+    discountType: 'Sibling (10%)',
+    discountPercent: 10,
+    isCharitySeat: false,
+    netMonthlyFee: 675,
+    paidAmount: 1600,
+    previousYearPendingFee: 600,
+    previousYearClearedAmount: 0,
+    promotedFromClass: 'Class 10th (Matric Target)',
+    lastPromotionDate: '2026-07-12',
+    promotionHistory: [
+      {
+        id: 'prom-107',
+        date: '2026-07-12',
+        fromClass: 'Class 10th (Matric Target)',
+        fromClassNum: 10,
+        toClass: 'Class 11th (I.Sc / I.A Foundation)',
+        toClassNum: 11,
+        session: '2026-27',
+        carryForwardDues: 600,
+        remarks: 'Passed Matric with 1st Division (412/500); joined I.Sc Evening Batch'
+      }
+    ],
+    feePayments: [
+      { id: 'fp-12', receiptNo: 'REC-2026-155', date: '2026-07-15', monthLabel: 'Registration + July 2026', amount: 925, mode: 'UPI / Online', session: '2026-27' },
+      { id: 'fp-13', receiptNo: 'REC-2026-240', date: '2026-08-18', monthLabel: 'August 2026', amount: 675, mode: 'Cash', session: '2026-27' }
+    ],
+    attendanceRecords: [
+      { id: 'att-701', date: '2026-11-05', status: 'Present', subjectTopic: 'Physics — Laws of Motion & Friction Numericals', shift: 'Evening Batch', markedBy: 'Rakesh Ranjan Verma' },
+      { id: 'att-702', date: '2026-11-04', status: 'Present', subjectTopic: 'Mathematics — Trigonometric Functions & Identities', shift: 'Evening Batch', markedBy: 'Rakesh Ranjan Verma' }
+    ],
+    notes: 'Passed Class 10th from SNTC; promoted to Class 11th Science Foundation.'
   }
 ];
+

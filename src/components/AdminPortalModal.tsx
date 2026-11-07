@@ -59,6 +59,10 @@ interface AdminPortalModalProps {
   onDisenrollStudent: (id: string, date: string, reason?: string) => void;
   onReEnrollStudent: (id: string, date: string, batchCode?: string) => void;
   onDeleteStudent: (id: string) => void;
+  onClearAllStudentsPreData: () => void;
+  onClearStudentsHistoryPreData: () => void;
+  onClearSingleStudentPreData: (id: string) => void;
+  onRestoreDefaultStudents: () => void;
   notices: NoticeItem[];
   onAddNotice: (notice: NoticeItem) => void;
   onDeleteNotice: (id: string) => void;
@@ -94,6 +98,10 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   onDisenrollStudent,
   onReEnrollStudent,
   onDeleteStudent,
+  onClearAllStudentsPreData,
+  onClearStudentsHistoryPreData,
+  onClearSingleStudentPreData,
+  onRestoreDefaultStudents,
   notices,
   onAddNotice,
   onDeleteNotice,
@@ -106,6 +114,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   const [loginError, setLoginError] = useState('');
   const [activeTab, setActiveTab] = useState<AdminTabType>(initialTab);
   const [saveBanner, setSaveBanner] = useState('');
+  const [confirmClearAllStudents, setConfirmClearAllStudents] = useState(false);
 
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab);
@@ -665,20 +674,33 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
 
               <div className="flex items-center gap-3">
                 <button
+                  type="button"
                   onClick={() => {
-                    if (confirm('Reset all institute data to initial defaults?')) {
-                      onResetData();
-                      showToast('Reset to default seed data.');
-                    }
+                    onClearAllStudentsPreData();
+                    setActiveTab('students');
+                    showToast('All pre-loaded student records & batch counts cleared to 0!');
                   }}
-                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1"
+                  className="text-[11px] font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-2.5 py-1 rounded-md flex items-center gap-1 cursor-pointer"
+                  title="Clear all pre-loaded student records and reset batch enrolled counts to 0"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Clear Student Pre-Data</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetData();
+                    showToast('Reset to default seed data.');
+                  }}
+                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1 cursor-pointer"
                 >
                   <RotateCcw className="w-3 h-3" />
                   <span>Reset Defaults</span>
                 </button>
                 <button
+                  type="button"
                   onClick={onLogout}
-                  className="text-xs font-bold text-rose-600 hover:text-rose-800"
+                  className="text-xs font-bold text-rose-600 hover:text-rose-800 cursor-pointer"
                 >
                   Sign Out
                 </button>
@@ -1046,102 +1068,224 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
               {/* TAB 2: 500-STUDENT ENROLLMENT, DISENROLLMENT & RE-ENROLLMENT REGISTER */}
               {activeTab === 'students' && (
                 <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-200">
                     <div>
                       <h3 className="text-base font-bold text-slate-900">
                         Student Enrollment Register ({students.length} / {instForm.maxStudentCapacity} Capacity)
                       </h3>
                       <p className="text-xs text-slate-500">
-                        Manage Enrollment Date, 1-click Disenrollment, Re-Enrollment, Batch IDs, and Charity/Discount records.
+                        Manage Enrollment Date, Disenrollment, Re-Enrollment, or Clear Pre-Loaded Student Data to start fresh.
                       </p>
                     </div>
-                    <button
-                      onClick={exportStudentsCSV}
-                      className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 self-start"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Export 500-Student CSV</span>
-                    </button>
-                  </div>
 
-                  <div className="space-y-2.5">
-                    {students.map((stu) => (
-                      <div
-                        key={stu.id}
-                        className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
-                      >
-                        <div className="space-y-1">
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span className="font-mono font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-sm">
-                              {stu.studentIdCode}
-                            </span>
-                            <span className="font-bold text-slate-900 text-sm">
-                              {stu.studentName}
-                            </span>
-                            <span className="font-mono text-xs font-semibold text-slate-700 bg-white border border-slate-200 px-2 py-0.5 rounded-sm">
-                              {stu.batchCode} ({stu.shift})
-                            </span>
-                            <span
-                              className={`text-[11px] font-bold px-2 py-0.5 rounded-sm ${
-                                stu.enrollmentStatus === 'Enrolled'
-                                  ? 'bg-emerald-100 text-emerald-900'
-                                  : stu.enrollmentStatus === 'Re-enrolled'
-                                  ? 'bg-indigo-100 text-indigo-900'
-                                  : 'bg-rose-100 text-rose-900'
-                              }`}
-                            >
-                              {stu.enrollmentStatus}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-600">
-                            Guardian: <strong>{stu.parentName}</strong> · Phone: {stu.phone} ·{' '}
-                            {stu.classLevel} · Net Fee: <strong>₹{stu.netMonthlyFee}/mo</strong> (
-                            {stu.discountType})
-                          </p>
-                          <p className="text-[11px] font-mono text-slate-500">
-                            Enrolled: {stu.enrollmentDate}
-                            {stu.disenrollmentDate
-                              ? ` | Disenrolled: ${stu.disenrollmentDate}`
-                              : ''}
-                            {stu.reEnrollmentDate
-                              ? ` | Re-Enrolled: ${stu.reEnrollmentDate}`
-                              : ''}
-                          </p>
-                        </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {students.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onClearStudentsHistoryPreData();
+                              showToast(
+                                'Cleared pre-filled fee receipts & attendance history for all students!'
+                              );
+                            }}
+                            className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Clear Fee & Attendance Logs Only</span>
+                          </button>
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          {stu.enrollmentStatus === 'Disenrolled' ? (
+                          {!confirmClearAllStudents ? (
                             <button
-                              onClick={() => {
-                                onReEnrollStudent(stu.id, todayStr, stu.batchCode);
-                                showToast(`Re-enrolled ${stu.studentName}`);
-                              }}
-                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold"
+                              type="button"
+                              onClick={() => setConfirmClearAllStudents(true)}
+                              className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
                             >
-                              Re-Enroll
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Clear All Student Pre-Data ({students.length})</span>
                             </button>
                           ) : (
-                            <button
-                              onClick={() => {
-                                onDisenrollStudent(stu.id, todayStr, 'Disenrolled by Admin');
-                                showToast(`Marked ${stu.studentName} as Disenrolled`);
-                              }}
-                              className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg text-xs font-bold"
-                            >
-                              Disenroll
-                            </button>
+                            <div className="flex items-center gap-1.5 bg-rose-50 border border-rose-300 px-2.5 py-1 rounded-lg">
+                              <span className="text-[11px] font-bold text-rose-800">
+                                Wipe all {students.length} students?
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onClearAllStudentsPreData();
+                                  setConfirmClearAllStudents(false);
+                                  showToast(
+                                    'All pre-loaded student data cleared! Register is now at 0 students.'
+                                  );
+                                }}
+                                className="px-2.5 py-1 bg-rose-700 hover:bg-rose-800 text-white rounded text-[11px] font-bold cursor-pointer"
+                              >
+                                Yes, Clear All
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmClearAllStudents(false)}
+                                className="px-2 py-1 bg-white text-slate-600 border border-slate-200 rounded text-[11px] font-semibold cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
                           )}
-                          <button
-                            onClick={() => onDeleteStudent(stu.id)}
-                            className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg"
-                            title="Delete Record"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                        </>
+                      )}
+
+                      {students.length === 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onRestoreDefaultStudents();
+                            showToast('Restored default demo student records.');
+                          }}
+                          className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Restore Sample Students</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={exportStudentsCSV}
+                        disabled={students.length === 0}
+                        className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Export CSV</span>
+                      </button>
+                    </div>
                   </div>
+
+                  {students.length === 0 ? (
+                    <div className="p-10 bg-slate-50 rounded-2xl border border-dashed border-slate-300 text-center space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center mx-auto">
+                        <Users className="w-6 h-6" />
+                      </div>
+                      <h4 className="text-sm font-bold text-slate-900">
+                        All Pre-Loaded Student Data Cleared (0 Enrolled Students)
+                      </h4>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto">
+                        The student register and batch enrollment counters are now completely clean. You can enroll new students from the Student Admission Form on the main page, or restore sample demo data below.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onRestoreDefaultStudents();
+                          showToast('Restored sample student records.');
+                        }}
+                        className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Restore Sample Student Pre-Data</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {students.map((stu) => (
+                        <div
+                          key={stu.id}
+                          className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-mono font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-sm">
+                                {stu.studentIdCode}
+                              </span>
+                              <span className="font-bold text-slate-900 text-sm">
+                                {stu.studentName}
+                              </span>
+                              <span className="font-mono text-xs font-semibold text-slate-700 bg-white border border-slate-200 px-2 py-0.5 rounded-sm">
+                                {stu.batchCode} ({stu.shift})
+                              </span>
+                              <span
+                                className={`text-[11px] font-bold px-2 py-0.5 rounded-sm ${
+                                  stu.enrollmentStatus === 'Enrolled'
+                                    ? 'bg-emerald-100 text-emerald-900'
+                                    : stu.enrollmentStatus === 'Re-enrolled'
+                                    ? 'bg-indigo-100 text-indigo-900'
+                                    : 'bg-rose-100 text-rose-900'
+                                }`}
+                              >
+                                {stu.enrollmentStatus}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600">
+                              Guardian: <strong>{stu.parentName}</strong> · Phone: {stu.phone} ·{' '}
+                              {stu.classLevel} · Net Fee: <strong>₹{stu.netMonthlyFee}/mo</strong> (
+                              {stu.discountType})
+                            </p>
+                            <p className="text-[11px] font-mono text-slate-500">
+                              Enrolled: {stu.enrollmentDate}
+                              {stu.disenrollmentDate
+                                ? ` | Disenrolled: ${stu.disenrollmentDate}`
+                                : ''}
+                              {stu.reEnrollmentDate
+                                ? ` | Re-Enrolled: ${stu.reEnrollmentDate}`
+                                : ''}
+                              {' · '}Receipts: {stu.feePayments?.length || 0} · Attendance Logs:{' '}
+                              {stu.attendanceRecords?.length || 0}
+                            </p>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onClearSingleStudentPreData(stu.id);
+                                showToast(
+                                  `Cleared pre-filled fee & attendance data for ${stu.studentName}`
+                                );
+                              }}
+                              className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                              title="Clear this student's pre-filled fee receipts and attendance history"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>Clear Pre-Data</span>
+                            </button>
+
+                            {stu.enrollmentStatus === 'Disenrolled' ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onReEnrollStudent(stu.id, todayStr, stu.batchCode);
+                                  showToast(`Re-enrolled ${stu.studentName}`);
+                                }}
+                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold cursor-pointer"
+                              >
+                                Re-Enroll
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onDisenrollStudent(stu.id, todayStr, 'Disenrolled by Admin');
+                                  showToast(`Marked ${stu.studentName} as Disenrolled`);
+                                }}
+                                className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg text-xs font-bold cursor-pointer"
+                              >
+                                Disenroll
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteStudent(stu.id);
+                                showToast(`Removed ${stu.studentName} from register`);
+                              }}
+                              className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                              title="Delete Student Record"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

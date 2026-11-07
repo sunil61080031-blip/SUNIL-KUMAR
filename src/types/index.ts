@@ -98,11 +98,27 @@ export interface FeePlan {
   features: string[];
 }
 
+export type AcademicWing = 'All' | 'Primary Class' | 'Secondary Class' | 'High Class';
+
+export interface PromotionRecord {
+  id: string;
+  date: string;
+  fromClass: string;
+  fromClassNum: number;
+  toClass: string;
+  toClassNum: number;
+  session: string;
+  carryForwardDues: number;
+  remarks?: string;
+}
+
 export interface FeePaymentItem {
   id: string;
   receiptNo: string;
   date: string;
   monthLabel: string;
+  session?: string;
+  isPreviousYearClearance?: boolean;
   amount: number;
   mode: 'Cash' | 'UPI / Online' | 'Charity Waiver';
 }
@@ -133,6 +149,7 @@ export interface StudentRecord {
   centreId: string;
   board: 'BSEB (Bihar Board)' | 'CBSE';
   village: string;
+  academicSession?: string; // e.g., '2026-27'
   enrollmentDate: string;
   disenrollmentDate?: string;
   reEnrollmentDate?: string;
@@ -144,6 +161,11 @@ export interface StudentRecord {
   charityNote?: string;
   netMonthlyFee: number;
   paidAmount?: number;
+  previousYearPendingFee?: number;
+  previousYearClearedAmount?: number;
+  promotedFromClass?: string;
+  lastPromotionDate?: string;
+  promotionHistory?: PromotionRecord[];
   feePayments?: FeePaymentItem[];
   attendanceRecords?: AttendanceRecord[];
   notes?: string;

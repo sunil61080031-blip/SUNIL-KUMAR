@@ -2,6 +2,16 @@ import React, { useState } from 'react';
 import { InstituteConfig } from '../types';
 import { Menu, X, Lock, ShieldCheck, GraduationCap, Phone, Settings } from 'lucide-react';
 
+export type MainSectionType =
+  | 'home'
+  | 'student-dashboard'
+  | 'student-portal'
+  | 'batches'
+  | 'fee-calculator'
+  | 'enrollment'
+  | 'notice-board'
+  | 'all';
+
 interface NavbarProps {
   instituteConfig: InstituteConfig;
   isAdmin: boolean;
@@ -9,6 +19,8 @@ interface NavbarProps {
   onLogoutAdmin: () => void;
   noticeCount: number;
   enrolledStudentCount: number;
+  activeMainSection?: MainSectionType;
+  onSelectMainSection?: (section: MainSectionType) => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -17,9 +29,19 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAdmin,
   onLogoutAdmin,
   noticeCount,
-  enrolledStudentCount
+  enrolledStudentCount,
+  activeMainSection = 'home',
+  onSelectMainSection
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const handleNavClick = (e: React.MouseEvent, section: MainSectionType) => {
+    if (onSelectMainSection) {
+      e.preventDefault();
+      onSelectMainSection(section);
+      setMobileMenuOpen(false);
+    }
+  };
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-xs no-print">
@@ -29,28 +51,33 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="font-bold text-emerald-200">Admin Mode Active:</span>
-              <span>{instituteConfig.founder} ({instituteConfig.role})</span>
+              <span>
+                {instituteConfig.founder} ({instituteConfig.role})
+              </span>
               <span className="hidden md:inline text-emerald-300">
                 · Enrolled: {enrolledStudentCount}/{instituteConfig.maxStudentCapacity}
               </span>
             </div>
             <div className="flex items-center gap-3">
               <button
+                type="button"
                 onClick={() => onOpenAdmin('branding')}
-                className="text-amber-300 hover:text-white font-bold underline flex items-center gap-1"
+                className="text-amber-300 hover:text-white font-bold underline flex items-center gap-1 cursor-pointer"
               >
                 <Settings className="w-3.5 h-3.5" />
                 <span>Edit Institute / Centres</span>
               </button>
               <button
+                type="button"
                 onClick={() => onOpenAdmin('students')}
-                className="text-emerald-200 hover:text-white font-bold underline"
+                className="text-emerald-200 hover:text-white font-bold underline cursor-pointer"
               >
-                Manage Students & Staff
+                Manage / Clear Students
               </button>
               <button
+                type="button"
                 onClick={onLogoutAdmin}
-                className="text-rose-300 hover:text-rose-100 font-semibold text-[11px]"
+                className="text-rose-300 hover:text-rose-100 font-semibold text-[11px] cursor-pointer"
               >
                 Logout
               </button>
@@ -61,14 +88,18 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Strict 3-zone Header Contract */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between gap-8 h-20">
+        <div className="flex items-center justify-between gap-6 h-16">
           {/* Zone 1: Single text wordmark */}
-          <a href="#home" className="flex items-center gap-3 shrink-0 group">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-emerald-800 to-emerald-600 text-white flex items-center justify-center text-xl shadow-sm group-hover:scale-105 transition-transform">
-              <GraduationCap className="w-6 h-6 text-emerald-100" />
+          <a
+            href="#home"
+            onClick={(e) => handleNavClick(e, 'home')}
+            className="flex items-center gap-3 shrink-0 group"
+          >
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-800 to-emerald-600 text-white flex items-center justify-center text-xl shadow-sm group-hover:scale-105 transition-transform">
+              <GraduationCap className="w-5 h-5 text-emerald-100" />
             </div>
             <div className="whitespace-nowrap">
-              <span className="text-base sm:text-lg font-bold tracking-tight text-slate-900 group-hover:text-emerald-700 transition-colors">
+              <span className="text-sm sm:text-base font-bold tracking-tight text-slate-900 group-hover:text-emerald-700 transition-colors">
                 {instituteConfig.name}
               </span>
               <p className="text-[11px] font-bold text-emerald-700 font-hindi -mt-0.5">
@@ -77,30 +108,82 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </a>
 
-          {/* Zone 2: 4-5 concise single-line nav links */}
-          <nav className="hidden lg:flex items-center gap-6 text-sm font-semibold text-slate-600">
-            <a href="#student-portal" className="hover:text-emerald-700 transition-colors whitespace-nowrap shrink-0">
+          {/* Zone 2: Concise single-line nav links */}
+          <nav className="hidden lg:flex items-center gap-4 text-xs font-bold text-slate-600">
+            <a
+              href="#home"
+              onClick={(e) => handleNavClick(e, 'home')}
+              className={`transition-colors whitespace-nowrap shrink-0 ${
+                activeMainSection === 'home'
+                  ? 'text-emerald-700 underline underline-offset-4'
+                  : 'hover:text-emerald-700'
+              }`}
+            >
+              Overview
+            </a>
+            <a
+              href="#student-dashboard"
+              onClick={(e) => handleNavClick(e, 'student-dashboard')}
+              className={`transition-colors whitespace-nowrap shrink-0 ${
+                activeMainSection === 'student-dashboard'
+                  ? 'text-emerald-700 underline underline-offset-4'
+                  : 'hover:text-emerald-700'
+              }`}
+            >
+              Student Dashboard
+            </a>
+            <a
+              href="#student-portal"
+              onClick={(e) => handleNavClick(e, 'student-portal')}
+              className={`transition-colors whitespace-nowrap shrink-0 ${
+                activeMainSection === 'student-portal'
+                  ? 'text-emerald-700 underline underline-offset-4'
+                  : 'hover:text-emerald-700'
+              }`}
+            >
               Student Portal
             </a>
-            <a href="#batches" className="hover:text-emerald-700 transition-colors whitespace-nowrap shrink-0">
+            <a
+              href="#batches"
+              onClick={(e) => handleNavClick(e, 'batches')}
+              className={`transition-colors whitespace-nowrap shrink-0 ${
+                activeMainSection === 'batches'
+                  ? 'text-emerald-700 underline underline-offset-4'
+                  : 'hover:text-emerald-700'
+              }`}
+            >
               Batches & Staff
             </a>
-            <a href="#fee-calculator" className="hover:text-emerald-700 transition-colors whitespace-nowrap shrink-0">
+            <a
+              href="#fee-calculator"
+              onClick={(e) => handleNavClick(e, 'fee-calculator')}
+              className={`transition-colors whitespace-nowrap shrink-0 ${
+                activeMainSection === 'fee-calculator'
+                  ? 'text-emerald-700 underline underline-offset-4'
+                  : 'hover:text-emerald-700'
+              }`}
+            >
               Fees & Charity
             </a>
-            <a href="#enrollment" className="hover:text-emerald-700 transition-colors whitespace-nowrap shrink-0">
-              Admission ({enrolledStudentCount}/{instituteConfig.maxStudentCapacity})
-            </a>
-            <a href="#notice-board" className="hover:text-emerald-700 transition-colors whitespace-nowrap shrink-0">
+            <a
+              href="#notice-board"
+              onClick={(e) => handleNavClick(e, 'notice-board')}
+              className={`transition-colors whitespace-nowrap shrink-0 ${
+                activeMainSection === 'notice-board'
+                  ? 'text-emerald-700 underline underline-offset-4'
+                  : 'hover:text-emerald-700'
+              }`}
+            >
               Notices ({noticeCount})
             </a>
           </nav>
 
           {/* Zone 3: 1 primary action (+ Admin trigger) */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             <button
+              type="button"
               onClick={() => onOpenAdmin(isAdmin ? 'branding' : undefined)}
-              className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 isAdmin
                   ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -122,18 +205,20 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <a
               href="#enrollment"
-              className="px-4 py-2 text-xs font-bold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0 shadow-sm"
+              onClick={(e) => handleNavClick(e, 'enrollment')}
+              className="px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0 shadow-xs"
             >
-              Student Admission
+              Admission ({enrolledStudentCount}/{instituteConfig.maxStudentCapacity})
             </a>
 
             {/* Mobile Menu Toggle */}
             <button
+              type="button"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="lg:hidden p-2 text-slate-700 hover:text-slate-900 rounded-lg"
+              className="lg:hidden p-1.5 text-slate-700 hover:text-slate-900 rounded-lg"
               aria-label="Toggle navigation menu"
             >
-              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
           </div>
         </div>
@@ -141,74 +226,76 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Mobile Drawer */}
       {mobileMenuOpen && (
-        <div className="lg:hidden bg-white border-t border-slate-200 px-4 py-4 space-y-3 shadow-lg">
-          <a
-            href="#student-portal"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 px-3 rounded-md text-sm font-bold text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100"
-          >
-            Student Login Portal (Schedule, Staff & Fee Balance)
-          </a>
+        <div className="lg:hidden bg-white border-t border-slate-200 px-4 py-3 space-y-2 shadow-lg">
           <a
             href="#home"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 px-3 rounded-md text-sm font-semibold text-slate-800 hover:bg-slate-50"
+            onClick={(e) => handleNavClick(e, 'home')}
+            className="block py-2 px-3 rounded-md text-xs font-bold text-slate-800 hover:bg-slate-50"
           >
-            Home & Study Centres
+            1. Institute Overview, Study Centres & Reviews
           </a>
           <a
-            href="#notice-board"
-            onClick={() => setMobileMenuOpen(false)}
-            className="flex items-center justify-between py-2 px-3 rounded-md text-sm font-semibold text-slate-800 hover:bg-slate-50"
+            href="#student-dashboard"
+            onClick={(e) => handleNavClick(e, 'student-dashboard')}
+            className="block py-2 px-3 rounded-md text-xs font-bold text-emerald-900 bg-emerald-100/80 hover:bg-emerald-200"
           >
-            <span>Notice Board & Circulars</span>
-            <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-sm">
-              {noticeCount} Notices
-            </span>
+            2. Class-Wise Student Dashboard (Primary / Secondary / High Class, Ledger & Promotion)
+          </a>
+          <a
+            href="#student-portal"
+            onClick={(e) => handleNavClick(e, 'student-portal')}
+            className="block py-2 px-3 rounded-md text-xs font-bold text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100"
+          >
+            3. Student Login Portal (Fee Balance, Attendance & Timetable)
           </a>
           <a
             href="#batches"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 px-3 rounded-md text-sm font-semibold text-slate-800 hover:bg-slate-50"
+            onClick={(e) => handleNavClick(e, 'batches')}
+            className="block py-2 px-3 rounded-md text-xs font-semibold text-slate-800 hover:bg-slate-50"
           >
-            Batches (Morning / Evening / Night) & Staff
-          </a>
-          <a
-            href="#fee-calculator"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 px-3 rounded-md text-sm font-semibold text-slate-800 hover:bg-slate-50"
-          >
-            Class-Wise Fees, Discounts & Charity Option
+            4. Batches (Morning / Evening / Night) & Assigned Staff
           </a>
           <a
             href="#enrollment"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 px-3 rounded-md text-sm font-semibold text-slate-800 hover:bg-slate-50"
+            onClick={(e) => handleNavClick(e, 'enrollment')}
+            className="block py-2 px-3 rounded-md text-xs font-semibold text-slate-800 hover:bg-slate-50"
           >
-            Student Enrollment, Disenrollment & Re-enrollment
+            5. Student Admission, Re-Enrollment & Register ({enrolledStudentCount}/
+            {instituteConfig.maxStudentCapacity})
           </a>
           <a
-            href="#location"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 px-3 rounded-md text-sm font-semibold text-slate-800 hover:bg-slate-50"
+            href="#fee-calculator"
+            onClick={(e) => handleNavClick(e, 'fee-calculator')}
+            className="block py-2 px-3 rounded-md text-xs font-semibold text-slate-800 hover:bg-slate-50"
           >
-            Study Centres & Contact
+            6. Class-Wise Fees, Discounts & Charity Calculator
+          </a>
+          <a
+            href="#notice-board"
+            onClick={(e) => handleNavClick(e, 'notice-board')}
+            className="flex items-center justify-between py-2 px-3 rounded-md text-xs font-semibold text-slate-800 hover:bg-slate-50"
+          >
+            <span>7. Official Notice Board</span>
+            <span className="text-[11px] font-mono font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-sm">
+              {noticeCount} Notices
+            </span>
           </a>
 
-          <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
+          <div className="pt-2 border-t border-slate-100 flex flex-col gap-2">
             <a
               href={`tel:${instituteConfig.phone}`}
-              className="w-full py-2.5 px-3 bg-slate-100 text-slate-800 rounded-lg text-center text-xs font-bold flex items-center justify-center gap-2"
+              className="w-full py-2 px-3 bg-slate-100 text-slate-800 rounded-lg text-center text-xs font-bold flex items-center justify-center gap-2"
             >
-              <Phone className="w-4 h-4 text-emerald-700" />
+              <Phone className="w-3.5 h-3.5 text-emerald-700" />
               <span>Call Helpline ({instituteConfig.phoneDisplay})</span>
             </a>
             <button
+              type="button"
               onClick={() => {
                 setMobileMenuOpen(false);
                 onOpenAdmin('branding');
               }}
-              className="w-full py-2.5 px-3 bg-slate-900 text-white rounded-lg text-center text-xs font-bold shadow-xs"
+              className="w-full py-2 px-3 bg-slate-900 text-white rounded-lg text-center text-xs font-bold shadow-xs"
             >
               Open Admin Control Suite
             </button>

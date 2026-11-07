@@ -25,23 +25,33 @@ import {
   INITIAL_STUDENTS
 } from './data/seedData';
 import { UrgentTicker } from './components/UrgentTicker';
-import { Navbar } from './components/Navbar';
+import { Navbar, MainSectionType } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { NoticeBoard } from './components/NoticeBoard';
 import { CourseBatches } from './components/CourseBatches';
+import { StudentDashboard } from './components/StudentDashboard';
 import { StudentPortal } from './components/StudentPortal';
 import { FeeEstimator } from './components/FeeEstimator';
-import { WhyChooseUs } from './components/WhyChooseUs';
 import { WhatsAppInquiry } from './components/WhatsAppInquiry';
 import { Footer } from './components/Footer';
 import { PrintNoticeModal } from './components/PrintNoticeModal';
 import { AdminPortalModal, AdminTabType } from './components/AdminPortalModal';
+import {
+  Building2,
+  GraduationCap,
+  BookOpen,
+  UserPlus,
+  Calculator,
+  Bell,
+  Layers,
+  LayoutDashboard
+} from 'lucide-react';
 
 const INSTITUTE_CONFIG_KEY = 'sntc_institute_config_v5';
 const STAFF_STORAGE_KEY = 'sntc_staff_v3';
 const BATCHES_STORAGE_KEY = 'sntc_batches_v3';
 const FEES_STORAGE_KEY = 'sntc_fees_v3';
-const STUDENTS_STORAGE_KEY = 'sntc_students_v5';
+const STUDENTS_STORAGE_KEY = 'sntc_students_v6';
 const NOTICES_STORAGE_KEY = 'sntc_notices_v3';
 const INQUIRIES_STORAGE_KEY = 'sntc_inquiries_v3';
 const ADMIN_SESSION_KEY = 'sntc_admin_active_v1';
@@ -59,6 +69,7 @@ export default function App() {
   });
 
   const [selectedCentreId, setSelectedCentreId] = useState<string>('all');
+  const [activeMainSection, setActiveMainSection] = useState<MainSectionType>('home');
 
   // 2. State: Assigned Staff & Roles
   const [staffList, setStaffList] = useState<StaffMember[]>(() => {
@@ -317,7 +328,65 @@ export default function App() {
   };
 
   const handleDeleteStudent = (id: string) => {
+    const target = students.find((s) => s.id === id);
     setStudents((prev) => prev.filter((s) => s.id !== id));
+    if (target && target.enrollmentStatus !== 'Disenrolled') {
+      setBatches((prev) =>
+        prev.map((b) =>
+          b.batchCode === target.batchCode
+            ? { ...b, enrolledCount: Math.max(0, b.enrolledCount - 1) }
+            : b
+        )
+      );
+    }
+  };
+
+  // Clear all pre-loaded student records and reset batch seat counters to 0
+  const handleClearAllStudentsPreData = () => {
+    setStudents([]);
+    setInquiries([]);
+    setBatches((prev) => prev.map((b) => ({ ...b, enrolledCount: 0 })));
+  };
+
+  // Clear only pre-loaded fee receipts & attendance history across all students
+  const handleClearStudentsHistoryPreData = () => {
+    setStudents((prev) =>
+      prev.map((s) => ({
+        ...s,
+        paidAmount: 0,
+        previousYearPendingFee: 0,
+        previousYearClearedAmount: 0,
+        feePayments: [],
+        attendanceRecords: []
+      }))
+    );
+  };
+
+  // Clear a single student's pre-filled fee receipts, attendance logs & lifecycle dates
+  const handleClearSingleStudentPreData = (id: string) => {
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              paidAmount: 0,
+              previousYearPendingFee: 0,
+              previousYearClearedAmount: 0,
+              feePayments: [],
+              attendanceRecords: [],
+              disenrollmentDate: undefined,
+              reEnrollmentDate: undefined,
+              enrollmentStatus: 'Enrolled'
+            }
+          : s
+      )
+    );
+  };
+
+  // Restore default sample students
+  const handleRestoreDefaultStudents = () => {
+    setStudents(INITIAL_STUDENTS);
+    setBatches(INITIAL_BATCHES);
   };
 
   const handleRecordFeePayment = (studentId: string, payment: FeePaymentItem) => {
@@ -325,14 +394,179 @@ export default function App() {
       prev.map((s) => {
         if (s.id !== studentId) return s;
         const updatedPayments = [payment, ...(s.feePayments || [])];
-        const newPaidSum = updatedPayments.reduce((sum, p) => sum + p.amount, 0);
+        const currentSessionPaymentsSum = updatedPayments
+          .filter((p) => !p.isPreviousYearClearance)
+          .reduce((sum, p) => sum + p.amount, 0);
         return {
           ...s,
-          paidAmount: Math.max((s.paidAmount || 0) + payment.amount, newPaidSum),
+          paidAmount: Math.max((s.paidAmount || 0) + payment.amount, currentSessionPaymentsSum),
           feePayments: updatedPayments
         };
       })
     );
+  };
+
+  // Clear or adjust Previous Academic Year Pending Fee
+  const handleClearPreviousYearFee = (
+    studentId: string,
+    amountPaid: number,
+    mode: 'Cash' | 'UPI / Online',
+    newTotalPrevPending?: number
+  ) => {
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id !== studentId) return s;
+        const updatedPrevTotal =
+          newTotalPrevPending !== undefined
+            ? newTotalPrevPending
+            : s.previousYearPendingFee || 0;
+        const updatedPrevCleared = (s.previousYearClearedAmount || 0) + amountPaid;
+        const newReceipts =
+          amountPaid > 0
+            ? [
+                {
+                  id: `fp-prv-${Date.now()}`,
+                  receiptNo: `PRV-2025-${Math.floor(100 + Math.random() * 900)}`,
+                  date: new Date().toISOString().slice(0, 10),
+                  monthLabel: 'Prev Year (2025-26) Arrear Clearance',
+                  amount: amountPaid,
+                  mode,
+                  session: '2025-26',
+                  isPreviousYearClearance: true
+                } as FeePaymentItem,
+                ...(s.feePayments || [])
+              ]
+            : s.feePayments || [];
+
+        return {
+          ...s,
+          previousYearPendingFee: updatedPrevTotal,
+          previousYearClearedAmount: updatedPrevCleared,
+          feePayments: newReceipts
+        };
+      })
+    );
+  };
+
+  // Promote single student to next class & session
+  const handlePromoteStudent = (
+    studentId: string,
+    toClassNum: number,
+    toClassLevel: string,
+    toBatchCode: string,
+    newSession: string,
+    carryForwardDues: number,
+    remarks?: string
+  ) => {
+    const plan = feePlans.find((fp) => fp.classNum === toClassNum);
+    const matchingBatch = batches.find((b) => b.batchCode === toBatchCode);
+    const today = new Date().toISOString().slice(0, 10);
+
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id !== studentId) return s;
+        const newBaseFee = plan ? plan.monthlyFee : s.baseMonthlyFee;
+        const newNetFee = s.isCharitySeat
+          ? 0
+          : Math.round(newBaseFee * (1 - (s.discountPercent || 0) / 100));
+
+        const promoEntry = {
+          id: `prom-${Date.now()}`,
+          date: today,
+          fromClass: s.classLevel,
+          fromClassNum: s.classNum,
+          toClass: toClassLevel,
+          toClassNum,
+          session: newSession,
+          carryForwardDues,
+          remarks
+        };
+
+        return {
+          ...s,
+          promotedFromClass: s.classLevel,
+          lastPromotionDate: today,
+          classNum: toClassNum,
+          classLevel: toClassLevel,
+          batchCode: toBatchCode,
+          batchId: matchingBatch?.id || s.batchId,
+          shift: matchingBatch?.shift || s.shift,
+          academicSession: newSession,
+          baseMonthlyFee: newBaseFee,
+          netMonthlyFee: newNetFee,
+          paidAmount: 0,
+          previousYearPendingFee: (s.previousYearPendingFee || 0) + carryForwardDues,
+          promotionHistory: [promoEntry, ...(s.promotionHistory || [])]
+        };
+      })
+    );
+  };
+
+  // Bulk promote all active students in a class to target class
+  const handleBulkPromoteClass = (
+    fromClassNum: number,
+    toClassNum: number,
+    toClassLevel: string,
+    toBatchCode: string,
+    newSession: string,
+    remarks?: string
+  ): number => {
+    const targets = students.filter(
+      (s) => s.classNum === fromClassNum && s.enrollmentStatus !== 'Disenrolled'
+    );
+    if (targets.length === 0) return 0;
+
+    const plan = feePlans.find((fp) => fp.classNum === toClassNum);
+    const matchingBatch = batches.find((b) => b.batchCode === toBatchCode);
+    const today = new Date().toISOString().slice(0, 10);
+
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.classNum !== fromClassNum || s.enrollmentStatus === 'Disenrolled') {
+          return s;
+        }
+        const oldPlan = feePlans.find((fp) => fp.classNum === s.classNum);
+        const oldReg = s.isCharitySeat ? 0 : oldPlan ? oldPlan.registrationFee : 200;
+        const estBilled = s.isCharitySeat ? 0 : oldReg + s.netMonthlyFee * 4;
+        const unpaidCurrent = Math.max(0, estBilled - (s.paidAmount || 0));
+
+        const newBaseFee = plan ? plan.monthlyFee : s.baseMonthlyFee;
+        const newNetFee = s.isCharitySeat
+          ? 0
+          : Math.round(newBaseFee * (1 - (s.discountPercent || 0) / 100));
+
+        const promoEntry = {
+          id: `prom-${Date.now()}-${s.id}`,
+          date: today,
+          fromClass: s.classLevel,
+          fromClassNum: s.classNum,
+          toClass: toClassLevel,
+          toClassNum,
+          session: newSession,
+          carryForwardDues: unpaidCurrent,
+          remarks
+        };
+
+        return {
+          ...s,
+          promotedFromClass: s.classLevel,
+          lastPromotionDate: today,
+          classNum: toClassNum,
+          classLevel: toClassLevel,
+          batchCode: toBatchCode,
+          batchId: matchingBatch?.id || s.batchId,
+          shift: matchingBatch?.shift || s.shift,
+          academicSession: newSession,
+          baseMonthlyFee: newBaseFee,
+          netMonthlyFee: newNetFee,
+          paidAmount: 0,
+          previousYearPendingFee: (s.previousYearPendingFee || 0) + unpaidCurrent,
+          promotionHistory: [promoEntry, ...(s.promotionHistory || [])]
+        };
+      })
+    );
+
+    return targets.length;
   };
 
   const handleRecordAttendance = (studentId: string, record: AttendanceRecord) => {
@@ -435,17 +669,15 @@ export default function App() {
   };
 
   // Navigation Helpers
-  const scrollToSection = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
-    }
+  const navigateToSection = (section: MainSectionType) => {
+    setActiveMainSection(section);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleSelectBatchForInquiry = (batch: BatchItem) => {
     setEnrollmentClass(batch.classLevel);
     setEnrollmentBatchCode(batch.batchCode);
-    scrollToSection('enrollment');
+    navigateToSection('enrollment');
   };
 
   const handleApplyFeeToInquiry = (
@@ -458,7 +690,7 @@ export default function App() {
     setEnrollmentEstimatedFee(estimatedFee);
     setEnrollmentDiscountType(discountType);
     setEnrollmentIsCharity(isCharity);
-    scrollToSection('enrollment');
+    navigateToSection('enrollment');
   };
 
   return (
@@ -478,86 +710,238 @@ export default function App() {
         onLogoutAdmin={handleAdminLogout}
         noticeCount={notices.length}
         enrolledStudentCount={totalEnrolledCount}
+        activeMainSection={activeMainSection}
+        onSelectMainSection={navigateToSection}
       />
 
-      {/* Main Page Sections */}
+      {/* Workspace Section Switcher Bar (Organizes all sections + sub-sections to minimize scrolling) */}
+      <div className="bg-slate-900 text-white border-b border-slate-800 py-2 px-4 no-print">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider mr-1">
+              Sections:
+            </span>
+            <button
+              type="button"
+              onClick={() => navigateToSection('home')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'home'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>1. Overview</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateToSection('student-dashboard')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'student-dashboard'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-amber-300 hover:bg-slate-700 hover:text-white border border-amber-500/30'
+              }`}
+            >
+              <LayoutDashboard className="w-3.5 h-3.5" />
+              <span>2. Student Dashboard (Class-Wise)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateToSection('student-portal')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'student-portal'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              <GraduationCap className="w-3.5 h-3.5" />
+              <span>3. Student Portal</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateToSection('batches')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'batches'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>4. Batches & Staff ({batches.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateToSection('enrollment')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'enrollment'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>
+                5. Admission ({totalEnrolledCount}/{instituteConfig.maxStudentCapacity})
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateToSection('fee-calculator')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'fee-calculator'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              <Calculator className="w-3.5 h-3.5" />
+              <span>6. Fees & Charity</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateToSection('notice-board')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'notice-board'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              <Bell className="w-3.5 h-3.5" />
+              <span>7. Notices ({notices.length})</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              navigateToSection(activeMainSection === 'all' ? 'home' : 'all')
+            }
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+              activeMainSection === 'all'
+                ? 'bg-amber-500 text-slate-950'
+                : 'bg-slate-800 text-amber-300 hover:bg-slate-700 border border-slate-700'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>
+              {activeMainSection === 'all'
+                ? 'Switch to Focused Tab View'
+                : 'View All Sections'}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* Main Page Sections (Each section has internal Sub-Section Tabs to minimize scrolling) */}
       <main className="flex-1">
-        {/* Hero Section with Study Centre Switcher & 500-Capacity Tracker */}
-        <Hero
-          instituteConfig={instituteConfig}
-          selectedCentreId={selectedCentreId}
-          onSelectCentre={setSelectedCentreId}
-          totalEnrolledCount={totalEnrolledCount}
-          isAdmin={isAdmin}
-          onOpenAdminBranding={() => openAdminSuite('branding')}
-          onExploreNotices={() => scrollToSection('notice-board')}
-          onEnrollClick={() => scrollToSection('enrollment')}
-        />
+        {/* 1. Hero Section (Sub-Sections: 1. Overview | 2. Study Centres | 3. Why Choose Us & Reviews) */}
+        {(activeMainSection === 'home' || activeMainSection === 'all') && (
+          <Hero
+            instituteConfig={instituteConfig}
+            selectedCentreId={selectedCentreId}
+            onSelectCentre={setSelectedCentreId}
+            totalEnrolledCount={totalEnrolledCount}
+            isAdmin={isAdmin}
+            onOpenAdminBranding={() => openAdminSuite('branding')}
+            onExploreNotices={() => navigateToSection('notice-board')}
+            onEnrollClick={() => navigateToSection('enrollment')}
+          />
+        )}
 
-        {/* Dynamic Notice Board with Official Print Previews */}
-        <NoticeBoard
-          notices={notices}
-          onPrintNotice={(notice) => setSelectedPrintNotice(notice)}
-          isAdmin={isAdmin}
-          onOpenAdminPost={() => openAdminSuite('notices')}
-        />
+        {/* 2. Wing-Wise & Class-Wise Student Dashboard (Primary / Secondary / High Class, Fee Ledger & Promotion) */}
+        {(activeMainSection === 'student-dashboard' || activeMainSection === 'all') && (
+          <StudentDashboard
+            students={students}
+            batches={batches}
+            feePlans={feePlans}
+            instituteConfig={instituteConfig}
+            isAdmin={isAdmin}
+            onRecordFeePayment={handleRecordFeePayment}
+            onClearPreviousYearFee={handleClearPreviousYearFee}
+            onPromoteStudent={handlePromoteStudent}
+            onBulkPromoteClass={handleBulkPromoteClass}
+            onDisenrollStudent={handleDisenrollStudent}
+            onReEnrollStudent={handleReEnrollStudent}
+          />
+        )}
 
-        {/* Batch IDs (Morning / Afternoon / Evening / Night) & Assigned Staff Roles */}
-        <CourseBatches
-          batches={batches}
-          staffList={staffList}
-          studyCentres={instituteConfig.studyCentres}
-          selectedCentreId={selectedCentreId}
-          isAdmin={isAdmin}
-          onSelectBatchForInquiry={handleSelectBatchForInquiry}
-          onOpenAdminBatches={() => openAdminSuite('batches')}
-          onEditBatch={(batch) => {
-            setEditingBatch(batch);
-            openAdminSuite('batches');
-          }}
-          onOpenAdminStaff={() => openAdminSuite('staff')}
-        />
+        {/* 3. Enrolled Student Portal (Sub-Sections: 1. Fee Balance & Chart | 2. Attendance | 3. Timetable) */}
+        {(activeMainSection === 'student-portal' || activeMainSection === 'all') && (
+          <StudentPortal
+            students={students}
+            batches={batches}
+            staffList={staffList}
+            feePlans={feePlans}
+            instituteConfig={instituteConfig}
+            onRecordFeePayment={handleRecordFeePayment}
+            onRecordAttendance={handleRecordAttendance}
+          />
+        )}
 
-        {/* Enrolled Student Portal: Batch Schedule, Attendance History & Fee Balance Reports */}
-        <StudentPortal
-          students={students}
-          batches={batches}
-          staffList={staffList}
-          feePlans={feePlans}
-          instituteConfig={instituteConfig}
-          onRecordFeePayment={handleRecordFeePayment}
-          onRecordAttendance={handleRecordAttendance}
-        />
+        {/* 4. Batches & Staff (Sub-Sections: 1. Active Batch IDs | 2. Assigned Staff & Faculty) */}
+        {(activeMainSection === 'batches' || activeMainSection === 'all') && (
+          <CourseBatches
+            batches={batches}
+            staffList={staffList}
+            studyCentres={instituteConfig.studyCentres}
+            selectedCentreId={selectedCentreId}
+            isAdmin={isAdmin}
+            onSelectBatchForInquiry={handleSelectBatchForInquiry}
+            onOpenAdminBatches={() => openAdminSuite('batches')}
+            onEditBatch={(batch) => {
+              setEditingBatch(batch);
+              openAdminSuite('batches');
+            }}
+            onOpenAdminStaff={() => openAdminSuite('staff')}
+          />
+        )}
 
-        {/* Class-Wise Tuition Fee Calculator with Charity & Discount Options */}
-        <FeeEstimator
-          feePlans={feePlans}
-          isAdmin={isAdmin}
-          onOpenAdminFees={() => openAdminSuite('batches')}
-          onApplyFeeToInquiry={handleApplyFeeToInquiry}
-        />
+        {/* 5. Student Admission & Register (Sub-Sections: 1. Admission Form | 2. Student Register | 3. Policy) */}
+        {(activeMainSection === 'enrollment' || activeMainSection === 'all') && (
+          <WhatsAppInquiry
+            instituteConfig={instituteConfig}
+            batches={batches}
+            feePlans={feePlans}
+            students={students}
+            totalEnrolledCount={totalEnrolledCount}
+            initialClass={enrollmentClass}
+            initialBatchCode={enrollmentBatchCode}
+            initialEstimatedFee={enrollmentEstimatedFee}
+            initialDiscountType={enrollmentDiscountType}
+            initialIsCharity={enrollmentIsCharity}
+            isAdmin={isAdmin}
+            onInquirySubmitted={handleInquirySubmitted}
+            onAddOrUpdateStudent={handleAddOrUpdateStudent}
+            onDisenrollStudent={handleDisenrollStudent}
+            onReEnrollStudent={handleReEnrollStudent}
+            onDeleteStudent={handleDeleteStudent}
+            onClearAllStudentsPreData={handleClearAllStudentsPreData}
+          />
+        )}
 
-        {/* Why Choose Us & Testimonials */}
-        <WhyChooseUs />
+        {/* 6. Class-Wise Tuition Fee Calculator (Sub-Sections: 1. Interactive Calculator | 2. Fee Schedule Table) */}
+        {(activeMainSection === 'fee-calculator' || activeMainSection === 'all') && (
+          <FeeEstimator
+            feePlans={feePlans}
+            isAdmin={isAdmin}
+            onOpenAdminFees={() => openAdminSuite('batches')}
+            onApplyFeeToInquiry={handleApplyFeeToInquiry}
+          />
+        )}
 
-        {/* Student Admission, Disenrollment & Re-enrollment Form + 500-Student Register */}
-        <WhatsAppInquiry
-          instituteConfig={instituteConfig}
-          batches={batches}
-          feePlans={feePlans}
-          students={students}
-          totalEnrolledCount={totalEnrolledCount}
-          initialClass={enrollmentClass}
-          initialBatchCode={enrollmentBatchCode}
-          initialEstimatedFee={enrollmentEstimatedFee}
-          initialDiscountType={enrollmentDiscountType}
-          initialIsCharity={enrollmentIsCharity}
-          isAdmin={isAdmin}
-          onInquirySubmitted={handleInquirySubmitted}
-          onAddOrUpdateStudent={handleAddOrUpdateStudent}
-          onDisenrollStudent={handleDisenrollStudent}
-          onReEnrollStudent={handleReEnrollStudent}
-        />
+        {/* 7. Dynamic Notice Board (Sub-Sections: 1. All | 2. Urgent | 3. Exams | 4. Batches | 5. Holidays) */}
+        {(activeMainSection === 'notice-board' || activeMainSection === 'all') && (
+          <NoticeBoard
+            notices={notices}
+            onPrintNotice={(notice) => setSelectedPrintNotice(notice)}
+            isAdmin={isAdmin}
+            onOpenAdminPost={() => openAdminSuite('notices')}
+          />
+        )}
       </main>
 
       {/* Multi-Study Centre Directory & Contact Footer */}
@@ -601,6 +985,10 @@ export default function App() {
         onDisenrollStudent={handleDisenrollStudent}
         onReEnrollStudent={handleReEnrollStudent}
         onDeleteStudent={handleDeleteStudent}
+        onClearAllStudentsPreData={handleClearAllStudentsPreData}
+        onClearStudentsHistoryPreData={handleClearStudentsHistoryPreData}
+        onClearSingleStudentPreData={handleClearSingleStudentPreData}
+        onRestoreDefaultStudents={handleRestoreDefaultStudents}
         notices={notices}
         onAddNotice={handleAddNotice}
         onDeleteNotice={handleDeleteNotice}

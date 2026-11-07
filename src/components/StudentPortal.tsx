@@ -73,7 +73,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [loggedInStudentId, setLoggedInStudentId] = useState<string | null>(
     students[0]?.id || null
   );
-  const [activeTab, setActiveTab] = useState<PortalViewTab>('all');
+  const [activeTab, setActiveTab] = useState<PortalViewTab>('fees');
 
   // Attendance Filter & Add Attendance State
   const [attendanceFilter, setAttendanceFilter] = useState<string>('All');
@@ -476,9 +476,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   return (
     <section
       id="student-portal"
-      className="py-16 bg-slate-100/90 border-b border-slate-200"
+      className="py-8 bg-slate-100/90 border-b border-slate-200"
     >
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-5">
         {/* Section Header + Secure Enrollment ID Login Bar */}
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
           <div>
@@ -723,16 +723,20 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             {/* Portal Section View Tabs */}
             <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-2 rounded-xl border border-slate-200 shadow-xs">
               <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider px-2">
+                  Sub-Sections:
+                </span>
                 <button
                   type="button"
-                  onClick={() => setActiveTab('all')}
-                  className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                    activeTab === 'all'
-                      ? 'bg-slate-900 text-white'
+                  onClick={() => setActiveTab('fees')}
+                  className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    activeTab === 'fees'
+                      ? 'bg-emerald-700 text-white'
                       : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
-                  Complete Dashboard (All 3)
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>1. Fee Balance & Progress (Due: ₹{feeReport?.balanceDue})</span>
                 </button>
                 <button
                   type="button"
@@ -745,7 +749,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 >
                   <ClipboardCheck className="w-3.5 h-3.5" />
                   <span>
-                    Attendance History ({attendanceSummary?.attendancePercentage}%)
+                    2. Attendance History ({attendanceSummary?.attendancePercentage}%)
                   </span>
                 </button>
                 <button
@@ -758,19 +762,18 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   }`}
                 >
                   <Calendar className="w-3.5 h-3.5" />
-                  <span>Batch-Specific Timetable ({activeStudent.batchCode})</span>
+                  <span>3. Batch Timetable ({activeStudent.batchCode})</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveTab('fees')}
-                  className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
-                    activeTab === 'fees'
-                      ? 'bg-emerald-700 text-white'
+                  onClick={() => setActiveTab('all')}
+                  className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                    activeTab === 'all'
+                      ? 'bg-slate-900 text-white'
                       : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
-                  <CreditCard className="w-3.5 h-3.5" />
-                  <span>Fee Balance & Receipts (Due: ₹{feeReport?.balanceDue})</span>
+                  4. Combined View
                 </button>
               </div>
 

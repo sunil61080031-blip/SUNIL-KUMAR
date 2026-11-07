@@ -20,7 +20,10 @@ import {
   RotateCcw,
   UserMinus,
   UserPlus,
-  Search
+  Search,
+  Trash2,
+  Users,
+  FileSpreadsheet
 } from 'lucide-react';
 
 interface WhatsAppInquiryProps {
@@ -39,7 +42,11 @@ interface WhatsAppInquiryProps {
   onAddOrUpdateStudent: (student: StudentRecord) => void;
   onDisenrollStudent: (studentId: string, date: string, reason?: string) => void;
   onReEnrollStudent: (studentId: string, date: string, batchCode?: string) => void;
+  onDeleteStudent?: (studentId: string) => void;
+  onClearAllStudentsPreData?: () => void;
 }
+
+type AdmissionSubTab = 'form' | 'register' | 'policy';
 
 export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
   instituteConfig,
@@ -54,11 +61,16 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
   onInquirySubmitted,
   onAddOrUpdateStudent,
   onDisenrollStudent,
-  onReEnrollStudent
+  onReEnrollStudent,
+  onDeleteStudent,
+  onClearAllStudentsPreData
 }) => {
   const todayStr = new Date().toISOString().slice(0, 10);
+  const [subTab, setSubTab] = useState<AdmissionSubTab>('form');
 
-  const [formMode, setFormMode] = useState<'New Enrollment' | 'Re-enrollment' | 'Disenrollment Request'>('New Enrollment');
+  const [formMode, setFormMode] = useState<
+    'New Enrollment' | 'Re-enrollment' | 'Disenrollment Request'
+  >('New Enrollment');
   const [selectedExistingStudentId, setSelectedExistingStudentId] = useState<string>('');
 
   const [studentName, setStudentName] = useState('');
@@ -81,12 +93,15 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
 
   // Student directory filter state
   const [studentSearch, setStudentSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'All' | EnrollmentStatus | 'Charity'>('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | EnrollmentStatus | 'Charity'>(
+    'All'
+  );
 
   // Sync incoming props from Batch click or Fee Calculator
   useEffect(() => {
     if (initialBatchCode) {
       setSelectedBatchCode(initialBatchCode);
+      setSubTab('form');
       const foundBatch = batches.find((b) => b.batchCode === initialBatchCode);
       if (foundBatch) {
         setCentreId(foundBatch.centreId);
@@ -107,7 +122,6 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
     }
   }, [initialDiscountType]);
 
-  // Derived active batch & class-wise fee
   const currentBatch =
     batches.find((b) => b.batchCode === selectedBatchCode) || batches[0];
 
@@ -125,7 +139,6 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
     Math.round(baseMonthlyFee * (1 - discountMeta.percent / 100))
   );
 
-  // Populate fields when choosing an existing student for Re-enrollment or Disenrollment
   const handleSelectExistingStudent = (stuId: string) => {
     setSelectedExistingStudentId(stuId);
     const found = students.find((s) => s.id === stuId);
@@ -209,7 +222,6 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
         return;
       }
     } else {
-      // New Enrollment (or Re-enrollment without pre-selected record)
       const nextCodeNum = String(students.length + 1).padStart(3, '0');
       updatedStudent = {
         id: `stu-${Date.now()}`,
@@ -232,7 +244,9 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
         discountType,
         discountPercent: discountMeta.percent,
         isCharitySeat,
-        charityNote: isCharitySeat ? charityReason.trim() || 'Charity Quota Applied' : undefined,
+        charityNote: isCharitySeat
+          ? charityReason.trim() || 'Charity Quota Applied'
+          : undefined,
         netMonthlyFee,
         notes: message.trim()
       };
@@ -315,120 +329,115 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
   });
 
   return (
-    <section id="enrollment" className="py-16 bg-white border-b border-slate-200">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-14">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-stretch">
-          {/* Left Column: Capacity, Guidelines & Mode Info */}
-          <div className="lg:col-span-5 flex flex-col justify-between space-y-6">
-            <div className="space-y-4">
-              <div className="inline-flex items-center gap-2 text-xs font-bold text-emerald-800 bg-emerald-50 px-3 py-1 rounded-md">
-                <UserCheck className="w-4 h-4 text-emerald-700" />
-                <span>
-                  Capacity: {totalEnrolledCount} / {instituteConfig.maxStudentCapacity} Students Enrolled
-                </span>
-              </div>
-
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-                Student Admission, Disenrollment & Re-Enrollment Form
-              </h2>
-
-              <p className="text-sm font-semibold text-emerald-800 font-hindi">
-                छात्र नामांकन, पुनः नामांकन (Re-enrollment), नामांकन रद्दीकरण एवं चैरिटी शुल्क फॉर्म
-              </p>
-
-              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                Complete student lifecycle registration supporting up to{' '}
-                <strong>{instituteConfig.maxStudentCapacity} students</strong> across multiple study
-                centres. Select Batch ID (Morning, Afternoon, Evening, or Night Class), Enrollment
-                Date, Class-wise Tuition Fee, and Charity / Scholarship discounts.
-              </p>
+    <section id="enrollment" className="py-8 bg-white border-b border-slate-200">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-5">
+        {/* Compact Header + Sub-Section Switcher */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-bold text-emerald-800 uppercase tracking-wider">
+              <UserCheck className="w-4 h-4 text-emerald-700" />
+              <span>
+                Student Lifecycle & Register ({totalEnrolledCount} /{' '}
+                {instituteConfig.maxStudentCapacity} Capacity)
+              </span>
             </div>
-
-            {/* Enrollment Capacity Meter */}
-            <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-slate-800">Institute Seat Capacity Status</span>
-                <span className="font-mono font-bold text-emerald-700">
-                  {totalEnrolledCount} / {instituteConfig.maxStudentCapacity} Enrolled
-                </span>
-              </div>
-              <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-emerald-600 rounded-full transition-all"
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      Math.round((totalEnrolledCount / instituteConfig.maxStudentCapacity) * 100)
-                    )}%`
-                  }}
-                />
-              </div>
-              <div className="grid grid-cols-3 gap-2 pt-2 text-center text-[11px]">
-                <div className="bg-white p-2 rounded-lg border border-slate-200">
-                  <p className="font-bold text-emerald-700 text-sm tabular-nums">
-                    {students.filter((s) => s.enrollmentStatus === 'Enrolled').length}
-                  </p>
-                  <p className="text-slate-500">Active Enrolled</p>
-                </div>
-                <div className="bg-white p-2 rounded-lg border border-slate-200">
-                  <p className="font-bold text-indigo-700 text-sm tabular-nums">
-                    {students.filter((s) => s.enrollmentStatus === 'Re-enrolled').length}
-                  </p>
-                  <p className="text-slate-500">Re-Enrolled</p>
-                </div>
-                <div className="bg-white p-2 rounded-lg border border-slate-200">
-                  <p className="font-bold text-amber-700 text-sm tabular-nums">
-                    {students.filter((s) => s.isCharitySeat).length}
-                  </p>
-                  <p className="text-slate-500">Charity Seats</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Charity & Discount Highlights */}
-            <div className="space-y-2.5 bg-amber-50/70 p-5 rounded-2xl border border-amber-200/80 text-xs text-slate-700">
-              <p className="font-bold text-amber-950 text-sm flex items-center gap-1.5">
-                <HeartHandshake className="w-4 h-4 text-amber-700" />
-                <span>Charity Free Education & Discount Policy:</span>
-              </p>
-              <p className="text-slate-600 leading-relaxed">
-                Orphaned or extremely underprivileged students can select{' '}
-                <strong>Full Charity / Free Education (100%)</strong> or{' '}
-                <strong>Partial Charity Aid (50%)</strong> directly in the form. Sibling (10%),
-                Merit (20%), and EWS (30%) discounts are calculated automatically.
-              </p>
-            </div>
+            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight mt-0.5">
+              Student Admission, Disenrollment & Re-Enrollment
+            </h2>
+            <p className="text-xs font-semibold text-emerald-800 font-hindi">
+              छात्र नामांकन, पुनः नामांकन (Re-enrollment), नामांकन रद्दीकरण एवं 500-छात्र रजिस्टर
+            </p>
           </div>
 
-          {/* Right Column: Interactive Student Admission / Re-enrollment / Disenrollment Form */}
-          <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-sm">
+          <div className="flex flex-wrap items-center gap-1.5 bg-white p-1 rounded-xl border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setSubTab('form')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                subTab === 'form'
+                  ? 'bg-emerald-700 text-white shadow-xs'
+                  : 'text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>1. Admission / Lifecycle Form</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSubTab('register')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                subTab === 'register'
+                  ? 'bg-emerald-700 text-white shadow-xs'
+                  : 'text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>2. Enrolled Register ({students.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSubTab('policy')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                subTab === 'policy'
+                  ? 'bg-emerald-700 text-white shadow-xs'
+                  : 'text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>3. Capacity & Charity Policy</span>
+            </button>
+          </div>
+        </div>
+
+        {/* SUB-SECTION 1: INTERACTIVE STUDENT ADMISSION / RE-ENROLLMENT / DISENROLLMENT FORM */}
+        {subTab === 'form' && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-xs">
             {submittedRecord ? (
               <div className="py-6 text-center space-y-4">
-                <div className="w-16 h-16 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto">
-                  <CheckCircle2 className="w-8 h-8" />
+                <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto">
+                  <CheckCircle2 className="w-7 h-7" />
                 </div>
                 <span className="font-mono text-xs font-bold bg-emerald-50 text-emerald-800 px-3 py-1 rounded-md">
-                  Student ID: {submittedRecord.studentIdCode} · Status: {submittedRecord.enrollmentStatus}
+                  Student ID: {submittedRecord.studentIdCode} · Status:{' '}
+                  {submittedRecord.enrollmentStatus}
                 </span>
                 <h3 className="text-xl font-bold text-slate-900">
                   {formMode} Recorded Successfully!
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-600 max-w-md mx-auto leading-relaxed">
-                  Student <strong className="text-slate-900">{submittedRecord.studentName}</strong> has been updated in Batch{' '}
-                  <strong className="font-mono text-emerald-800">{submittedRecord.batchCode}</strong> ({submittedRecord.shift}). Net Monthly Tuition Fee:{' '}
-                  <strong className="text-slate-900">₹{submittedRecord.netMonthlyFee}/month</strong> ({submittedRecord.discountType}).
+                  Student <strong className="text-slate-900">{submittedRecord.studentName}</strong>{' '}
+                  has been updated in Batch{' '}
+                  <strong className="font-mono text-emerald-800">
+                    {submittedRecord.batchCode}
+                  </strong>{' '}
+                  ({submittedRecord.shift}). Net Monthly Tuition Fee:{' '}
+                  <strong className="text-slate-900">
+                    ₹{submittedRecord.netMonthlyFee}/month
+                  </strong>{' '}
+                  ({submittedRecord.discountType}).
                 </p>
 
-                <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
+                <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
                   <button
+                    type="button"
                     onClick={() => setSubmittedRecord(null)}
-                    className="px-4 py-2.5 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors"
+                    className="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors cursor-pointer"
                   >
                     Process Another Student
                   </button>
                   <button
+                    type="button"
+                    onClick={() => setSubTab('register')}
+                    className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    View in Student Register
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => triggerWhatsAppConfirmation(submittedRecord)}
-                    className="px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+                    className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
                   >
                     <MessageCircle className="w-4 h-4" />
                     <span>Send Official Slip on WhatsApp</span>
@@ -438,9 +447,9 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
                 {/* Mode Selector Tabs: New Enrollment | Re-enrollment | Disenrollment */}
-                <div className="space-y-2 border-b border-slate-100 pb-4">
-                  <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                    Select Enrollment Action Type
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Select Enrollment Action Type:
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <button
@@ -449,7 +458,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                         setFormMode('New Enrollment');
                         setSelectedExistingStudentId('');
                       }}
-                      className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors ${
+                      className={`py-2 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
                         formMode === 'New Enrollment'
                           ? 'bg-emerald-700 text-white border-emerald-700'
                           : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -462,7 +471,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                     <button
                       type="button"
                       onClick={() => setFormMode('Re-enrollment')}
-                      className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors ${
+                      className={`py-2 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
                         formMode === 'Re-enrollment'
                           ? 'bg-indigo-700 text-white border-indigo-700'
                           : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -475,7 +484,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                     <button
                       type="button"
                       onClick={() => setFormMode('Disenrollment Request')}
-                      className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors ${
+                      className={`py-2 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
                         formMode === 'Disenrollment Request'
                           ? 'bg-rose-700 text-white border-rose-700'
                           : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -494,9 +503,8 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                   </div>
                 )}
 
-                {/* Existing Student Selector if Re-enrollment or Disenrollment */}
                 {formMode !== 'New Enrollment' && (
-                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
                     <label className="text-xs font-bold text-slate-800 block">
                       Select Registered Student for {formMode} *
                     </label>
@@ -517,8 +525,8 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                   </div>
                 )}
 
-                {/* Student & Guardian Name */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Compact 4-Column Row 1: Student Name, Father Name, Mobile, Date */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-700 block">
                       Student Full Name *
@@ -546,10 +554,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                       className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:border-emerald-600 focus:bg-white"
                     />
                   </div>
-                </div>
 
-                {/* Mobile & Enrollment/Disenrollment/Re-enrollment Date */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-700 block">
                       WhatsApp / Contact Number *
@@ -561,7 +566,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                       onChange={(e) => setPhone(e.target.value)}
                       placeholder="e.g. 9650952919"
                       maxLength={12}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:border-emerald-600 focus:bg-white font-mono"
                     />
                   </div>
 
@@ -586,8 +591,8 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                   </div>
                 </div>
 
-                {/* Study Centre & Batch ID (Morning / Evening / Night Class) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Compact Row 2: Study Centre, Batch ID, Board, Address */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-700 block">
                       Assign Study Centre *
@@ -595,7 +600,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                     <select
                       value={centreId}
                       onChange={(e) => setCentreId(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg"
                     >
                       {instituteConfig.studyCentres.map((c) => (
                         <option key={c.id} value={c.id}>
@@ -607,73 +612,21 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
 
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-700 block">
-                      Batch ID & Shift (Morning / Evening / Night) *
+                      Batch ID & Shift *
                     </label>
                     <select
                       value={selectedBatchCode}
                       onChange={(e) => setSelectedBatchCode(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:border-emerald-600 focus:bg-white font-medium"
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg font-medium"
                     >
                       {batches.map((b) => (
                         <option key={b.id} value={b.batchCode}>
-                          [{b.batchCode}] {b.classLevel} — {b.shift} ({b.timing})
+                          [{b.batchCode}] {b.classLevel} — {b.shift}
                         </option>
                       ))}
                     </select>
                   </div>
-                </div>
 
-                {/* Class-Wise Tuition Fee & Charity / Discount Selector */}
-                {formMode !== 'Disenrollment Request' && (
-                  <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-emerald-950">
-                        Class-Wise Tuition Fee & Charity / Discount Option
-                      </span>
-                      <span className="text-xs font-mono font-bold text-emerald-800">
-                        Base Fee: ₹{baseMonthlyFee}/mo → Net Payable: ₹{netMonthlyFee}/mo
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-bold text-slate-700 block">
-                          Select Discount or Charity Option
-                        </label>
-                        <select
-                          value={discountType}
-                          onChange={(e) => setDiscountType(e.target.value as FeeDiscountType)}
-                          className="w-full px-3 py-2 text-xs bg-white border border-emerald-300 rounded-lg font-semibold text-slate-800"
-                        >
-                          {DISCOUNT_OPTIONS.map((opt) => (
-                            <option key={opt.label} value={opt.label}>
-                              {opt.label} (-{opt.percent}%)
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-bold text-slate-700 block">
-                          Charity / Scholarship Justification Note
-                        </label>
-                        <input
-                          type="text"
-                          value={charityReason}
-                          onChange={(e) => setCharityReason(e.target.value)}
-                          placeholder={
-                            isCharitySeat
-                              ? 'Enter orphan / BPL / welfare verification details'
-                              : 'Optional sibling name or school marks %'
-                          }
-                          className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-700 block">
                       Target Exam Board
@@ -696,37 +649,87 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                       type="text"
                       value={village}
                       onChange={(e) => setVillage(e.target.value)}
-                      placeholder="e.g. Ward No. 08, Gadhiya, Bhaptiyahi"
+                      placeholder="e.g. Ward No. 08, Gadhiya"
                       className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg"
                     />
                   </div>
                 </div>
 
-                {/* Additional Note */}
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-700 block">
-                    {formMode === 'Disenrollment Request'
-                      ? 'Reason for Disenrollment *'
-                      : 'Remarks / Subjects Focus (Optional)'}
-                  </label>
-                  <input
-                    type="text"
-                    required={formMode === 'Disenrollment Request'}
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder={
-                      formMode === 'Disenrollment Request'
-                        ? 'e.g. Moving out of town / health break'
-                        : 'e.g. Enrolling in Morning + Night Revision class'
-                    }
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg"
-                  />
-                </div>
+                {/* Class-Wise Tuition Fee & Charity / Discount Selector + Submit */}
+                {formMode !== 'Disenrollment Request' && (
+                  <div className="p-3.5 bg-emerald-50/60 rounded-xl border border-emerald-200 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-700 block">
+                        Discount or Charity Option (Base: ₹{baseMonthlyFee}/mo)
+                      </label>
+                      <select
+                        value={discountType}
+                        onChange={(e) => setDiscountType(e.target.value as FeeDiscountType)}
+                        className="w-full px-3 py-2 text-xs bg-white border border-emerald-300 rounded-lg font-semibold text-slate-800"
+                      >
+                        {DISCOUNT_OPTIONS.map((opt) => (
+                          <option key={opt.label} value={opt.label}>
+                            {opt.label} (-{opt.percent}%)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                <div className="pt-2">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-700 block">
+                        Charity / Scholarship Note
+                      </label>
+                      <input
+                        type="text"
+                        value={charityReason}
+                        onChange={(e) => setCharityReason(e.target.value)}
+                        placeholder={
+                          isCharitySeat
+                            ? 'Orphan / BPL verification details'
+                            : 'Sibling name or school marks %'
+                        }
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-700 block">
+                        Remarks (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={message}
+                        onChange={(e) => setMessage(e.target.value)}
+                        placeholder="e.g. Morning + Night Test Series"
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {formMode === 'Disenrollment Request' && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Reason for Disenrollment *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={message}
+                      onChange={(e) => setMessage(e.target.value)}
+                      placeholder="e.g. Moving out of town / health break"
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <span className="text-xs font-mono font-bold text-emerald-800">
+                    Base Fee: ₹{baseMonthlyFee}/mo → Net Payable: ₹{netMonthlyFee}/mo
+                  </span>
                   <button
                     type="submit"
-                    className={`w-full py-3 text-white font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-2 shadow-sm ${
+                    className={`px-6 py-2.5 text-white font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-2 shadow-xs cursor-pointer ${
                       formMode === 'Disenrollment Request'
                         ? 'bg-rose-700 hover:bg-rose-800'
                         : formMode === 'Re-enrollment'
@@ -734,10 +737,10 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                         : 'bg-emerald-700 hover:bg-emerald-800'
                     }`}
                   >
-                    <Send className="w-4 h-4" />
+                    <Send className="w-3.5 h-3.5" />
                     <span>
                       {formMode === 'New Enrollment'
-                        ? `Confirm Student Enrollment (Net Fee: ₹${netMonthlyFee}/mo)`
+                        ? `Confirm Student Enrollment (₹${netMonthlyFee}/mo)`
                         : formMode === 'Re-enrollment'
                         ? 'Confirm Student Re-Enrollment'
                         : 'Record Student Disenrollment'}
@@ -747,154 +750,270 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
               </form>
             )}
           </div>
-        </div>
+        )}
 
-        {/* Live Student Enrollment, Disenrollment & Re-enrollment Directory */}
-        <div className="bg-slate-50 rounded-2xl border border-slate-200 p-6 sm:p-8 space-y-5">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-200 pb-4">
-            <div>
-              <h3 className="text-lg sm:text-xl font-extrabold text-slate-900">
-                Enrolled Student Register ({students.length} Records · Max {instituteConfig.maxStudentCapacity})
-              </h3>
-              <p className="text-xs text-slate-500">
-                Track student Batch ID, Shift (Morning/Evening/Night), Enrollment Date, Disenrollment, Re-enrollment, and Charity/Discount status.
-              </p>
-            </div>
+        {/* SUB-SECTION 2: ENROLLED STUDENT REGISTER */}
+        {subTab === 'register' && (
+          <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">
+                  Enrolled Student Register ({students.length} Records · Max{' '}
+                  {instituteConfig.maxStudentCapacity})
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Track student Batch ID, Shift, Enrollment Date, Disenrollment, Re-enrollment, and Charity/Discount status.
+                </p>
+              </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {(['All', 'Enrolled', 'Re-enrolled', 'Disenrolled', 'Charity'] as const).map(
-                (st) => (
+              <div className="flex flex-wrap items-center gap-2">
+                {(['All', 'Enrolled', 'Re-enrolled', 'Disenrolled', 'Charity'] as const).map(
+                  (st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setStatusFilter(st)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                        statusFilter === st
+                          ? 'bg-emerald-700 text-white'
+                          : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {st === 'Charity' ? 'Charity Quota' : st}
+                    </button>
+                  )
+                )}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={studentSearch}
+                    onChange={(e) => setStudentSearch(e.target.value)}
+                    placeholder="Search ID, name, batch..."
+                    className="pl-8 pr-3 py-1 text-xs bg-white border border-slate-200 rounded-lg"
+                  />
+                </div>
+                {isAdmin && students.length > 0 && onClearAllStudentsPreData && (
                   <button
-                    key={st}
-                    onClick={() => setStatusFilter(st)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                      statusFilter === st
-                        ? 'bg-emerald-700 text-white'
-                        : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                    }`}
+                    type="button"
+                    onClick={onClearAllStudentsPreData}
+                    className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
-                    {st === 'Charity' ? 'Charity Quota' : st}
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear Student Pre-Data</span>
                   </button>
-                )
-              )}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={studentSearch}
-                  onChange={(e) => setStudentSearch(e.target.value)}
-                  placeholder="Search ID, name, batch..."
-                  className="pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg"
-                />
+                )}
               </div>
             </div>
-          </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[11px]">
-                  <th className="py-2.5 px-3">Student ID & Name</th>
-                  <th className="py-2.5 px-3">Batch ID & Shift</th>
-                  <th className="py-2.5 px-3">Enrollment Lifecycle Dates</th>
-                  <th className="py-2.5 px-3">Fee & Charity / Discount</th>
-                  <th className="py-2.5 px-3">Status</th>
-                  <th className="py-2.5 px-3 text-right">Quick Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200/80 bg-white">
-                {filteredStudents.map((stu) => (
-                  <tr key={stu.id} className="hover:bg-slate-50/80">
-                    <td className="py-3 px-3">
-                      <span className="font-mono font-bold text-emerald-800 block">
-                        {stu.studentIdCode}
-                      </span>
-                      <span className="font-bold text-slate-900">{stu.studentName}</span>
-                      <span className="text-[11px] text-slate-500 block">
-                        G: {stu.parentName} · {stu.village}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3">
-                      <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded-sm">
-                        {stu.batchCode}
-                      </span>
-                      <span className="block text-slate-700 font-semibold mt-1">
-                        {stu.shift}
-                      </span>
-                      <span className="text-[11px] text-slate-500">{stu.classLevel}</span>
-                    </td>
-                    <td className="py-3 px-3 font-mono text-[11px] space-y-0.5">
-                      <div className="text-slate-700">
-                        Enrolled: <strong>{stu.enrollmentDate}</strong>
-                      </div>
-                      {stu.disenrollmentDate && (
-                        <div className="text-rose-600">
-                          Disenrolled: <strong>{stu.disenrollmentDate}</strong>
-                        </div>
-                      )}
-                      {stu.reEnrollmentDate && (
-                        <div className="text-indigo-700">
-                          Re-enrolled: <strong>{stu.reEnrollmentDate}</strong>
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-3 px-3">
-                      <div className="font-mono font-bold text-slate-900 tabular-nums">
-                        ₹{stu.netMonthlyFee}/mo{' '}
-                        <span className="text-[10px] font-normal text-slate-400 line-through">
-                          {stu.discountPercent > 0 ? `₹${stu.baseMonthlyFee}` : ''}
-                        </span>
-                      </div>
-                      <span
-                        className={`text-[11px] font-semibold ${
-                          stu.isCharitySeat ? 'text-amber-700' : 'text-emerald-700'
-                        }`}
-                      >
-                        {stu.discountType}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3">
-                      <span
-                        className={`font-bold text-[11px] px-2 py-0.5 rounded-sm ${
-                          stu.enrollmentStatus === 'Enrolled'
-                            ? 'bg-emerald-50 text-emerald-800'
-                            : stu.enrollmentStatus === 'Re-enrolled'
-                            ? 'bg-indigo-50 text-indigo-800'
-                            : 'bg-rose-50 text-rose-800'
-                        }`}
-                      >
-                        {stu.enrollmentStatus}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3 text-right">
-                      {stu.enrollmentStatus === 'Disenrolled' ? (
-                        <button
-                          onClick={() => onReEnrollStudent(stu.id, todayStr, stu.batchCode)}
-                          className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[11px] font-bold transition-colors"
-                        >
-                          Re-Enroll Now
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() =>
-                            onDisenrollStudent(
-                              stu.id,
-                              todayStr,
-                              isAdmin ? 'Disenrolled by Admin' : 'Disenrollment recorded'
-                            )
-                          }
-                          className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-[11px] font-bold transition-colors"
-                        >
-                          Disenroll
-                        </button>
-                      )}
-                    </td>
+            <div className="overflow-x-auto bg-white rounded-xl border border-slate-200">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[11px]">
+                    <th className="py-2.5 px-3">Student ID & Name</th>
+                    <th className="py-2.5 px-3">Batch ID & Shift</th>
+                    <th className="py-2.5 px-3">Enrollment Lifecycle Dates</th>
+                    <th className="py-2.5 px-3">Fee & Charity / Discount</th>
+                    <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3 text-right">Quick Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-200/80">
+                  {filteredStudents.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-slate-500">
+                        No student records found in the register. Switch to{' '}
+                        <button
+                          type="button"
+                          onClick={() => setSubTab('form')}
+                          className="text-emerald-700 font-bold underline cursor-pointer"
+                        >
+                          1. Admission Form
+                        </button>{' '}
+                        to enroll a new student.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredStudents.map((stu) => (
+                      <tr key={stu.id} className="hover:bg-slate-50/80">
+                        <td className="py-2.5 px-3">
+                          <span className="font-mono font-bold text-emerald-800 block">
+                            {stu.studentIdCode}
+                          </span>
+                          <span className="font-bold text-slate-900">{stu.studentName}</span>
+                          <span className="text-[11px] text-slate-500 block">
+                            G: {stu.parentName} · {stu.village}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded-sm">
+                            {stu.batchCode}
+                          </span>
+                          <span className="block text-slate-700 font-semibold mt-0.5">
+                            {stu.shift}
+                          </span>
+                          <span className="text-[11px] text-slate-500">{stu.classLevel}</span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-[11px] space-y-0.5">
+                          <div className="text-slate-700">
+                            Enrolled: <strong>{stu.enrollmentDate}</strong>
+                          </div>
+                          {stu.disenrollmentDate && (
+                            <div className="text-rose-600">
+                              Disenrolled: <strong>{stu.disenrollmentDate}</strong>
+                            </div>
+                          )}
+                          {stu.reEnrollmentDate && (
+                            <div className="text-indigo-700">
+                              Re-enrolled: <strong>{stu.reEnrollmentDate}</strong>
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-mono font-bold text-slate-900 tabular-nums">
+                            ₹{stu.netMonthlyFee}/mo{' '}
+                            <span className="text-[10px] font-normal text-slate-400 line-through">
+                              {stu.discountPercent > 0 ? `₹${stu.baseMonthlyFee}` : ''}
+                            </span>
+                          </div>
+                          <span
+                            className={`text-[11px] font-semibold ${
+                              stu.isCharitySeat ? 'text-amber-700' : 'text-emerald-700'
+                            }`}
+                          >
+                            {stu.discountType}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span
+                            className={`font-bold text-[11px] px-2 py-0.5 rounded-sm ${
+                              stu.enrollmentStatus === 'Enrolled'
+                                ? 'bg-emerald-50 text-emerald-800'
+                                : stu.enrollmentStatus === 'Re-enrolled'
+                                ? 'bg-indigo-50 text-indigo-800'
+                                : 'bg-rose-50 text-rose-800'
+                            }`}
+                          >
+                            {stu.enrollmentStatus}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <div className="inline-flex items-center gap-1.5">
+                            {stu.enrollmentStatus === 'Disenrolled' ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onReEnrollStudent(stu.id, todayStr, stu.batchCode)
+                                }
+                                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[11px] font-bold transition-colors cursor-pointer"
+                              >
+                                Re-Enroll Now
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onDisenrollStudent(
+                                    stu.id,
+                                    todayStr,
+                                    isAdmin ? 'Disenrolled by Admin' : 'Disenrollment recorded'
+                                  )
+                                }
+                                className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-[11px] font-bold transition-colors cursor-pointer"
+                              >
+                                Disenroll
+                              </button>
+                            )}
+                            {isAdmin && onDeleteStudent && (
+                              <button
+                                type="button"
+                                onClick={() => onDeleteStudent(stu.id)}
+                                className="p-1 text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
+                                title="Delete Student Record"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* SUB-SECTION 3: CAPACITY & CHARITY POLICY */}
+        {subTab === 'policy' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-800">
+                  Institute Seat Capacity Status
+                </span>
+                <span className="font-mono font-bold text-emerald-700">
+                  {totalEnrolledCount} / {instituteConfig.maxStudentCapacity} Enrolled
+                </span>
+              </div>
+              <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-emerald-600 rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.round(
+                        (totalEnrolledCount / instituteConfig.maxStudentCapacity) * 100
+                      )
+                    )}%`
+                  }}
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-2 pt-2 text-center text-[11px]">
+                <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                  <p className="font-bold text-emerald-700 text-base tabular-nums">
+                    {students.filter((s) => s.enrollmentStatus === 'Enrolled').length}
+                  </p>
+                  <p className="text-slate-500">Active Enrolled</p>
+                </div>
+                <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                  <p className="font-bold text-indigo-700 text-base tabular-nums">
+                    {students.filter((s) => s.enrollmentStatus === 'Re-enrolled').length}
+                  </p>
+                  <p className="text-slate-500">Re-Enrolled</p>
+                </div>
+                <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                  <p className="font-bold text-amber-700 text-base tabular-nums">
+                    {students.filter((s) => s.isCharitySeat).length}
+                  </p>
+                  <p className="text-slate-500">Charity Seats</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 bg-amber-50/70 p-5 rounded-2xl border border-amber-200/80 text-xs text-slate-700">
+              <p className="font-bold text-amber-950 text-sm flex items-center gap-1.5">
+                <HeartHandshake className="w-4 h-4 text-amber-700" />
+                <span>Charity Free Education & Discount Policy:</span>
+              </p>
+              <p className="text-slate-600 leading-relaxed">
+                Orphaned or extremely underprivileged students can select{' '}
+                <strong>Full Charity / Free Education (100%)</strong> or{' '}
+                <strong>Partial Charity Aid (50%)</strong> directly in the admission form.
+                Sibling (10%), Merit (20%), and EWS (30%) discounts are calculated
+                automatically.
+              </p>
+              <button
+                type="button"
+                onClick={() => setSubTab('form')}
+                className="px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg font-bold text-xs cursor-pointer"
+              >
+                Open Student Admission Form
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
