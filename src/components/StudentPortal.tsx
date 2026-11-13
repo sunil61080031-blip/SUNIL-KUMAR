@@ -9,7 +9,9 @@ import {
   AttendanceRecord,
   AttendanceStatus,
   SecurityConfig,
-  SecurityLogItem
+  SecurityLogItem,
+  FeeReminderLogItem,
+  FeeReminderSettings
 } from '../types';
 import {
   GraduationCap,
@@ -40,7 +42,11 @@ import {
   Eye,
   EyeOff,
   ShieldAlert,
-  Lock
+  Lock,
+  BellRing,
+  CheckCheck,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -51,7 +57,11 @@ import {
   Tooltip,
   Cell
 } from 'recharts';
-import { PdfExportRequest } from '../utils/ledgerHelpers';
+import {
+  PdfExportRequest,
+  formatMonthYearFromDate,
+  previewSmartPaymentAllocation
+} from '../utils/ledgerHelpers';
 import {
   evaluatePasswordStrength,
   generateSixDigitOtp,
@@ -66,6 +76,9 @@ interface StudentPortalProps {
   feePlans: FeePlan[];
   instituteConfig: InstituteConfig;
   securityConfig: SecurityConfig;
+  feeReminders: FeeReminderLogItem[];
+  feeReminderSettings: FeeReminderSettings;
+  onAcknowledgeReminder: (reminderId: string) => void;
   onSetStudentPassword: (studentId: string, newPassword: string) => Promise<void>;
   onSecurityLog: (
     actor: string,
@@ -87,6 +100,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   feePlans,
   instituteConfig,
   securityConfig,
+  feeReminders,
+  feeReminderSettings,
+  onAcknowledgeReminder,
   onSetStudentPassword,
   onSecurityLog,
   onRecordFeePayment,
@@ -168,11 +184,31 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [payMonthLabel, setPayMonthLabel] = useState('November 2026');
   const [payAmount, setPayAmount] = useState<number>(0);
   const [payMode, setPayMode] = useState<'Cash' | 'UPI / Online'>('UPI / Online');
+  const [payRemarks, setPayRemarks] = useState('');
   const [paymentSuccessMsg, setPaymentSuccessMsg] = useState('');
+  const [showReminderHistory, setShowReminderHistory] = useState(false);
 
   const activeStudent = useMemo(
     () => students.find((s) => s.id === loggedInStudentId) || null,
     [students, loggedInStudentId]
+  );
+
+  const studentReminders = useMemo(
+    () =>
+      activeStudent
+        ? feeReminders.filter((r) => r.studentId === activeStudent.id)
+        : [],
+    [activeStudent, feeReminders]
+  );
+
+  const unreadReminders = useMemo(
+    () => studentReminders.filter((r) => r.status !== 'Acknowledged'),
+    [studentReminders]
+  );
+
+  const acknowledgedReminders = useMemo(
+    () => studentReminders.filter((r) => r.status === 'Acknowledged'),
+    [studentReminders]
   );
 
   // Match student's specific batch
@@ -634,25 +670,60 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     e.preventDefault();
     if (!activeStudent || payAmount <= 0) return;
 
+    const amt = Number(payAmount);
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const paidInMo = formatMonthYearFromDate(todayStr);
+    const preview = previewSmartPaymentAllocation(
+      activeStudent,
+      feePlans,
+      amt,
+      todayStr,
+      paidInMo,
+      false
+    );
+    const isPartial =
+      amt < (activeStudent.netMonthlyFee || 0) ||
+      (feeReport ? amt < feeReport.balanceDue : false);
+
     const newPayment: FeePaymentItem = {
       id: `fp-${Date.now()}`,
-      receiptNo: `REC-2026-${Math.floor(300 + Math.random() * 600)}`,
-      date: new Date().toISOString().slice(0, 10),
-      monthLabel: payMonthLabel.trim() || 'Monthly Tuition',
-      amount: Number(payAmount),
+      receiptNo: `${isPartial ? 'PART' : 'REC'}-2026-${Math.floor(300 + Math.random() * 600)}`,
+      date: todayStr,
+      paidInMonth: paidInMo,
+      monthLabel: payMonthLabel.trim() || `Paid in ${paidInMo}`,
+      session: activeStudent.academicSession || '2026-27',
+      isPartialPayment: isPartial,
+      prevYearClearedPart: 0,
+      sessionPaidPart: amt,
+      extraAdvanceAmount: preview.extraAdvanceToNextMonths,
+      adjustmentBreakdown: preview.breakdown,
+      paidByParentName: activeStudent.parentName,
+      remarks:
+        payRemarks.trim() ||
+        (preview.extraAdvanceToNextMonths > 0
+          ? `Paid in ${paidInMo} · ₹${preview.extraAdvanceToNextMonths} extra adjusted to next month(s)`
+          : isPartial
+          ? 'Partial payment logged via Student Portal'
+          : undefined),
+      amount: amt,
       mode: payMode
     };
 
     onRecordFeePayment(activeStudent.id, newPayment);
     setPaymentSuccessMsg(
-      `Payment of ₹${newPayment.amount} recorded (Receipt: ${newPayment.receiptNo})!`
+      `${isPartial ? 'Partial payment' : 'Payment'} of ₹${newPayment.amount} recorded in ${paidInMo} (Receipt: ${newPayment.receiptNo})${
+        preview.extraAdvanceToNextMonths > 0
+          ? ` — ₹${preview.extraAdvanceToNextMonths} adjusted to next month(s)!`
+          : '!'
+      }`
     );
+    setPayRemarks('');
     setShowPayForm(false);
-    setTimeout(() => setPaymentSuccessMsg(''), 3500);
+    setTimeout(() => setPaymentSuccessMsg(''), 4000);
   };
 
-  const handleWhatsAppFeeStatement = () => {
-    if (!activeStudent || !feeReport || !attendanceSummary) return;
+  const whatsAppFeeStatementUrl = useMemo(() => {
+    if (!activeStudent || !feeReport || !attendanceSummary) return '#';
     let text = `*${instituteConfig.name} — Student Portal Report*\n`;
     text += `------------------------------------\n`;
     text += `*Student:* ${activeStudent.studentName} (${activeStudent.studentIdCode})\n`;
@@ -670,11 +741,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
       /\D/g,
       ''
     );
-    window.open(
-      `https://wa.me/${targetPhone}?text=${encodeURIComponent(text)}`,
-      '_blank'
-    );
-  };
+    return `https://wa.me/${targetPhone}?text=${encodeURIComponent(text)}`;
+  }, [activeStudent, feeReport, attendanceSummary, instituteConfig, assignedCentre]);
 
   return (
     <section
@@ -1175,6 +1243,132 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Automated Parent Fee Deadline In-App Notification Inbox */}
+            {unreadReminders.length > 0 && (
+              <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-5 shadow-xs space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-red-200 pb-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-red-600 text-white flex items-center justify-center shrink-0">
+                      <BellRing className="w-4.5 h-4.5" />
+                    </div>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-sm font-extrabold text-red-950">
+                          Parent Fee Deadline Notification — Action Required
+                        </h4>
+                        <span className="px-2 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold uppercase tracking-wider">
+                          {unreadReminders.length} Unread Alert{unreadReminders.length > 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      <p className="text-xs text-red-800 mt-0.5">
+                        Fee payment deadline ({feeReminderSettings.activeDeadlineDate}) has been exceeded for{' '}
+                        <strong>{activeStudent.studentName}</strong> (Parent: {activeStudent.parentName}).
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {unreadReminders.map((rem) => (
+                    <div
+                      key={rem.id}
+                      className="bg-white border border-red-200 rounded-xl p-4 space-y-3 shadow-2xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono font-bold px-2 py-0.5 rounded bg-red-100 text-red-800">
+                            {rem.daysPastDeadline} Days Past Deadline
+                          </span>
+                          <span className="font-mono font-bold px-2 py-0.5 rounded bg-rose-600 text-white">
+                            Pending Due: ₹{rem.dueAmount}
+                          </span>
+                          <span className="font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
+                            {rem.channel} · {rem.status}
+                          </span>
+                        </div>
+                        <span className="font-mono text-slate-500">
+                          Issued: {rem.sentAt}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-lg p-3 whitespace-pre-line leading-relaxed">
+                        {rem.messageText}
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onAcknowledgeReminder(rem.id)}
+                          className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Acknowledge / Mark Read</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveTab('fees');
+                            setPayAmount(activeStudent.netMonthlyFee || rem.dueAmount || 500);
+                            setShowPayForm(true);
+                          }}
+                          className="px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                          <span>Record / Pay Due Now</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {acknowledgedReminders.length > 0 && (
+              <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-2xs space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>
+                      Parent Notification Archive ({acknowledgedReminders.length} Acknowledged)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowReminderHistory(!showReminderHistory)}
+                    className="text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>{showReminderHistory ? 'Hide History' : 'View Read Alerts'}</span>
+                    {showReminderHistory ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </div>
+
+                {showReminderHistory && (
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                    {acknowledgedReminders.map((rem) => (
+                      <div
+                        key={rem.id}
+                        className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-1.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
+                          <span className="font-bold text-emerald-800">
+                            ✓ Acknowledged · Deadline {rem.deadlineDate} · Due ₹{rem.dueAmount}
+                          </span>
+                          <span className="font-mono">{rem.sentAt}</span>
+                        </div>
+                        <p className="text-slate-700 whitespace-pre-line leading-relaxed">
+                          {rem.messageText}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Portal Section View Tabs */}
             <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-2 rounded-xl border border-slate-200 shadow-xs">
@@ -1902,16 +2096,39 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                           onSubmit={handleAddPaymentSubmit}
                           className="p-3.5 bg-emerald-50/80 rounded-xl border border-emerald-200 space-y-2.5 text-xs"
                         >
-                          <p className="font-bold text-emerald-950">
-                            Log New Tuition Fee Installment
-                          </p>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="font-bold text-emerald-950">
+                              Log Partial / Full Tuition Installment
+                            </p>
+                            <div className="flex flex-wrap gap-1">
+                              {[
+                                {
+                                  label: `50% (₹${Math.max(50, Math.round((activeStudent.netMonthlyFee || 500) / 2))})`,
+                                  val: Math.max(50, Math.round((activeStudent.netMonthlyFee || 500) / 2))
+                                },
+                                {
+                                  label: `1 Mo (₹${activeStudent.netMonthlyFee || 500})`,
+                                  val: activeStudent.netMonthlyFee || 500
+                                }
+                              ].map((preset) => (
+                                <button
+                                  key={preset.label}
+                                  type="button"
+                                  onClick={() => setPayAmount(preset.val)}
+                                  className="px-2 py-0.5 bg-white hover:bg-emerald-100 border border-emerald-300 rounded text-[10px] font-mono font-bold text-emerald-900 cursor-pointer"
+                                >
+                                  {preset.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                           <div className="grid grid-cols-2 gap-2">
                             <input
                               type="text"
                               required
                               value={payMonthLabel}
                               onChange={(e) => setPayMonthLabel(e.target.value)}
-                              placeholder="Month (e.g. Oct 2026)"
+                              placeholder="Month (e.g. Nov 2026)"
                               className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg"
                             />
                             <input
@@ -1924,6 +2141,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                               className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold"
                             />
                           </div>
+                          <input
+                            type="text"
+                            value={payRemarks}
+                            onChange={(e) => setPayRemarks(e.target.value)}
+                            placeholder="Optional note (e.g. Partial payment by parent)"
+                            className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg"
+                          />
                           <div className="flex items-center justify-between gap-2">
                             <select
                               value={payMode}
@@ -1943,41 +2167,90 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                         </form>
                       )}
 
-                      <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-                        {feeReport.payments.map((p) => (
-                          <div
-                            key={p.id}
-                            className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-xs"
-                          >
-                            <div>
-                              <span className="font-mono font-bold text-emerald-800">
-                                {p.receiptNo}
-                              </span>
-                              <span className="text-slate-400 mx-1.5">·</span>
-                              <span className="font-semibold text-slate-900">
-                                {p.monthLabel}
-                              </span>
-                              <span className="block text-[11px] text-slate-500">
-                                Date: {p.date} · Mode: {p.mode}
+                      <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                        {feeReport.payments.map((p) => {
+                          const paidInMo =
+                            p.paidInMonth || formatMonthYearFromDate(p.date);
+                          return (
+                            <div
+                              key={p.id}
+                              className={`p-3 rounded-xl border flex items-start justify-between gap-2 text-xs ${
+                                p.extraAdvanceAmount && p.extraAdvanceAmount > 0
+                                  ? 'bg-emerald-50/50 border-emerald-200'
+                                  : p.isPartialPayment
+                                  ? 'bg-amber-50/60 border-amber-200'
+                                  : 'bg-slate-50 border-slate-200'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-mono font-bold text-emerald-800">
+                                    {p.receiptNo}
+                                  </span>
+                                  <span className="text-slate-400">·</span>
+                                  <span className="font-semibold text-slate-900">
+                                    {p.monthLabel}
+                                  </span>
+                                  <span className="px-1.5 py-0.2 rounded bg-sky-100 text-sky-900 border border-sky-200 text-[10px] font-bold">
+                                    Paid in: {paidInMo}
+                                  </span>
+                                  {p.isPartialPayment && (
+                                    <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold">
+                                      Partial Paid
+                                    </span>
+                                  )}
+                                  {p.extraAdvanceAmount !== undefined &&
+                                    p.extraAdvanceAmount > 0 && (
+                                      <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-900 border border-emerald-300 text-[10px] font-bold">
+                                        +₹{p.extraAdvanceAmount} Adjusted to Next Mo.
+                                      </span>
+                                    )}
+                                </div>
+                                <span className="block text-[11px] text-slate-500 mt-0.5">
+                                  Date: {p.date} · Mode: {p.mode}
+                                  {p.paidByParentName ? ` · By ${p.paidByParentName}` : ''}
+                                  {p.remarks ? ` · ${p.remarks}` : ''}
+                                </span>
+                                {p.adjustmentBreakdown &&
+                                  p.adjustmentBreakdown.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-1.5">
+                                      {p.adjustmentBreakdown.map((item, bIdx) => (
+                                        <span
+                                          key={`${p.id}-bd-${bIdx}`}
+                                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                                            item.type === 'next-month-advance'
+                                              ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                                              : item.type === 'back-due' ||
+                                                item.type === 'prev-year'
+                                              ? 'bg-amber-50 text-amber-900 border-amber-200'
+                                              : 'bg-white text-slate-700 border-slate-200'
+                                          }`}
+                                        >
+                                          {item.label}: ₹{item.amount}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                              </div>
+                              <span className="font-mono font-extrabold text-slate-900 tabular-nums shrink-0">
+                                ₹{p.amount}
                               </span>
                             </div>
-                            <span className="font-mono font-extrabold text-slate-900 tabular-nums">
-                              ₹{p.amount}
-                            </span>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
 
                     {/* WhatsApp Fee & Attendance Statement Button */}
-                    <button
-                      type="button"
-                      onClick={handleWhatsAppFeeStatement}
-                      className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2 shadow-xs cursor-pointer"
+                    <a
+                      href={whatsAppFeeStatementUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2 shadow-xs"
                     >
                       <MessageCircle className="w-4 h-4" />
                       <span>Send Fee & Attendance Report on WhatsApp</span>
-                    </button>
+                    </a>
                   </div>
                 </div>
               )}

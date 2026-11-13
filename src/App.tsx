@@ -16,7 +16,9 @@ import {
   FeePaymentItem,
   AttendanceRecord,
   SecurityConfig,
-  SecurityLogItem
+  SecurityLogItem,
+  FeeReminderSettings,
+  FeeReminderLogItem
 } from './types';
 import {
   createInitialSecurityConfig,
@@ -25,6 +27,12 @@ import {
   hashSecret,
   verifySecret
 } from './utils/securityHelpers';
+import { computeStudentFinancials } from './utils/ledgerHelpers';
+import {
+  DEFAULT_FEE_REMINDER_SETTINGS,
+  computeDaysPastDeadline,
+  buildFeeReminderMessage
+} from './utils/reminderHelpers';
 import {
   INITIAL_NOTICES,
   INITIAL_BATCHES,
@@ -68,6 +76,8 @@ const INQUIRIES_STORAGE_KEY = 'sntc_inquiries_v3';
 const ADMIN_SESSION_KEY = 'sntc_admin_active_v1';
 const SECURITY_CONFIG_KEY = 'sntc_security_config_v1';
 const SECURITY_LOGS_KEY = 'sntc_security_logs_v1';
+const REMINDER_SETTINGS_KEY = 'sntc_reminder_settings_v1';
+const REMINDER_LOGS_KEY = 'sntc_fee_reminders_v1';
 
 export default function App() {
   // 1. State: Institute Configuration & Multi-Study Centres
@@ -179,6 +189,27 @@ export default function App() {
       if (saved) return JSON.parse(saved);
     } catch (e) {
       console.error('Error loading security logs', e);
+    }
+    return [];
+  });
+
+  // State: Automated Fee Deadline Reminders & In-App Parent Notifications
+  const [feeReminderSettings, setFeeReminderSettings] = useState<FeeReminderSettings>(() => {
+    try {
+      const saved = localStorage.getItem(REMINDER_SETTINGS_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading reminder settings', e);
+    }
+    return DEFAULT_FEE_REMINDER_SETTINGS;
+  });
+
+  const [feeReminders, setFeeReminders] = useState<FeeReminderLogItem[]>(() => {
+    try {
+      const saved = localStorage.getItem(REMINDER_LOGS_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading fee reminders', e);
     }
     return [];
   });
@@ -342,6 +373,108 @@ export default function App() {
       status
     };
     setSecurityLogs((prev) => [newItem, ...prev].slice(0, 40));
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REMINDER_SETTINGS_KEY, JSON.stringify(feeReminderSettings));
+    } catch (e) {
+      console.error('Failed to sync reminder settings', e);
+    }
+  }, [feeReminderSettings]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REMINDER_LOGS_KEY, JSON.stringify(feeReminders));
+    } catch (e) {
+      console.error('Failed to sync fee reminders', e);
+    }
+  }, [feeReminders]);
+
+  // Automatically trigger in-app notifications for parents of students exceeding the payment deadline
+  useEffect(() => {
+    if (!feeReminderSettings.autoTriggerInAppOnLoad) return;
+    const daysPast = computeDaysPastDeadline(feeReminderSettings.activeDeadlineDate);
+    if (daysPast <= 0) return;
+
+    const nowStamp = new Date().toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    setFeeReminders((prev) => {
+      const generatedForMissing: FeeReminderLogItem[] = [];
+      for (const stu of students) {
+        if (stu.enrollmentStatus === 'Disenrolled') continue;
+        const fin = computeStudentFinancials(stu, feePlans);
+        if (fin.totalCombinedPending <= 0) continue;
+
+        const alreadyNotifiedForDeadline = prev.some(
+          (r) =>
+            r.studentId === stu.id &&
+            r.deadlineDate === feeReminderSettings.activeDeadlineDate
+        );
+        if (alreadyNotifiedForDeadline) continue;
+
+        const msg = buildFeeReminderMessage(
+          stu,
+          fin,
+          instituteConfig,
+          feeReminderSettings.activeDeadlineDate,
+          daysPast,
+          feeReminderSettings.defaultLanguage
+        );
+
+        generatedForMissing.push({
+          id: `rem-auto-${stu.id}-${feeReminderSettings.activeDeadlineDate}`,
+          studentId: stu.id,
+          studentIdCode: stu.studentIdCode,
+          studentName: stu.studentName,
+          parentName: stu.parentName,
+          parentPhone: stu.phone,
+          classLevel: stu.classLevel,
+          dueAmount: fin.totalCombinedPending,
+          deadlineDate: feeReminderSettings.activeDeadlineDate,
+          daysPastDeadline: daysPast,
+          channel: 'In-App Notification',
+          messageText: msg,
+          sentAt: nowStamp,
+          status: 'Automated Trigger',
+          language: feeReminderSettings.defaultLanguage
+        });
+      }
+
+      if (generatedForMissing.length === 0) return prev;
+      return [...generatedForMissing, ...prev].slice(0, 120);
+    });
+  }, [
+    students,
+    feePlans,
+    instituteConfig,
+    feeReminderSettings.autoTriggerInAppOnLoad,
+    feeReminderSettings.activeDeadlineDate,
+    feeReminderSettings.defaultLanguage
+  ]);
+
+  const handleDispatchFeeReminder = (reminder: FeeReminderLogItem) => {
+    setFeeReminders((prev) => [reminder, ...prev].slice(0, 120));
+  };
+
+  const handleBulkDispatchReminders = (reminders: FeeReminderLogItem[]) => {
+    if (reminders.length === 0) return;
+    setFeeReminders((prev) => [...reminders, ...prev].slice(0, 120));
+  };
+
+  const handleAcknowledgeReminder = (reminderId: string) => {
+    setFeeReminders((prev) =>
+      prev.map((r) => (r.id === reminderId ? { ...r, status: 'Acknowledged' } : r))
+    );
+  };
+
+  const handleClearFeeReminders = () => {
+    setFeeReminders([]);
   };
 
   // Calculate total active enrolled count across batches + newly added student records
@@ -582,12 +715,32 @@ export default function App() {
       prev.map((s) => {
         if (s.id !== studentId) return s;
         const updatedPayments = [payment, ...(s.feePayments || [])];
-        const currentSessionPaymentsSum = updatedPayments
-          .filter((p) => !p.isPreviousYearClearance)
-          .reduce((sum, p) => sum + p.amount, 0);
+        const sessionDelta =
+          typeof payment.sessionPaidPart === 'number'
+            ? payment.sessionPaidPart
+            : payment.isPreviousYearClearance || payment.session === '2025-26'
+            ? 0
+            : payment.amount;
+        const prevYearDelta =
+          typeof payment.prevYearClearedPart === 'number'
+            ? payment.prevYearClearedPart
+            : payment.isPreviousYearClearance || payment.session === '2025-26'
+            ? payment.amount
+            : 0;
+        const currentSessionPaymentsSum = updatedPayments.reduce(
+          (sum, p) =>
+            sum +
+            (typeof p.sessionPaidPart === 'number'
+              ? p.sessionPaidPart
+              : p.isPreviousYearClearance || p.session === '2025-26'
+              ? 0
+              : p.amount),
+          0
+        );
         return {
           ...s,
-          paidAmount: Math.max((s.paidAmount || 0) + payment.amount, currentSessionPaymentsSum),
+          paidAmount: Math.max((s.paidAmount || 0) + sessionDelta, currentSessionPaymentsSum),
+          previousYearClearedAmount: (s.previousYearClearedAmount || 0) + prevYearDelta,
           feePayments: updatedPayments
         };
       })
@@ -599,7 +752,8 @@ export default function App() {
     studentId: string,
     amountPaid: number,
     mode: 'Cash' | 'UPI / Online',
-    newTotalPrevPending?: number
+    newTotalPrevPending?: number,
+    meta?: { paidByParentName?: string; remarks?: string; date?: string }
   ) => {
     setStudents((prev) =>
       prev.map((s) => {
@@ -615,12 +769,16 @@ export default function App() {
                 {
                   id: `fp-prv-${Date.now()}`,
                   receiptNo: `PRV-2025-${Math.floor(100 + Math.random() * 900)}`,
-                  date: new Date().toISOString().slice(0, 10),
-                  monthLabel: 'Prev Year (2025-26) Arrear Clearance',
+                  date: meta?.date || new Date().toISOString().slice(0, 10),
+                  monthLabel: 'Prev Year (2025-26) Arrear Partial Clearance',
                   amount: amountPaid,
                   mode,
                   session: '2025-26',
-                  isPreviousYearClearance: true
+                  isPreviousYearClearance: true,
+                  isPartialPayment: updatedPrevCleared < updatedPrevTotal,
+                  paidByParentName: meta?.paidByParentName || s.parentName,
+                  collectedBy: instituteConfig.founder,
+                  remarks: meta?.remarks
                 } as FeePaymentItem,
                 ...(s.feePayments || [])
               ]
@@ -1051,6 +1209,12 @@ export default function App() {
             feePlans={feePlans}
             instituteConfig={instituteConfig}
             isAdmin={isAdmin}
+            feeReminders={feeReminders}
+            feeReminderSettings={feeReminderSettings}
+            onUpdateReminderSettings={setFeeReminderSettings}
+            onDispatchFeeReminder={handleDispatchFeeReminder}
+            onBulkDispatchReminders={handleBulkDispatchReminders}
+            onClearFeeReminders={handleClearFeeReminders}
             onRecordFeePayment={handleRecordFeePayment}
             onClearPreviousYearFee={handleClearPreviousYearFee}
             onPromoteStudent={handlePromoteStudent}
@@ -1070,6 +1234,9 @@ export default function App() {
             feePlans={feePlans}
             instituteConfig={instituteConfig}
             securityConfig={securityConfig}
+            feeReminders={feeReminders}
+            feeReminderSettings={feeReminderSettings}
+            onAcknowledgeReminder={handleAcknowledgeReminder}
             onSetStudentPassword={handleSetStudentPortalPassword}
             onSecurityLog={addSecurityLog}
             onRecordFeePayment={handleRecordFeePayment}

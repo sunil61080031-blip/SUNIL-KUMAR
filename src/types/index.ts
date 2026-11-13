@@ -112,13 +112,29 @@ export interface PromotionRecord {
   remarks?: string;
 }
 
+export interface PaymentAdjustmentItem {
+  label: string;
+  monthKey?: string;
+  amount: number;
+  type: 'prev-year' | 'back-due' | 'current-month' | 'next-month-advance';
+}
+
 export interface FeePaymentItem {
   id: string;
   receiptNo: string;
   date: string;
+  paidInMonth?: string;
   monthLabel: string;
   session?: string;
   isPreviousYearClearance?: boolean;
+  prevYearClearedPart?: number;
+  sessionPaidPart?: number;
+  extraAdvanceAmount?: number;
+  adjustmentBreakdown?: PaymentAdjustmentItem[];
+  isPartialPayment?: boolean;
+  paidByParentName?: string;
+  collectedBy?: string;
+  remarks?: string;
   amount: number;
   mode: 'Cash' | 'UPI / Online' | 'Charity Waiver';
 }
@@ -196,6 +212,33 @@ export interface SecurityLogItem {
   event: string;
   method: 'Password' | 'OTP' | '2FA' | 'System';
   status: 'Success' | 'Failed' | 'Reset';
+}
+
+export type FeeReminderLanguage = 'Bilingual' | 'English' | 'Hindi';
+
+export interface FeeReminderSettings {
+  monthlyDeadlineDay: number;
+  activeDeadlineDate: string;
+  autoTriggerInAppOnLoad: boolean;
+  defaultLanguage: FeeReminderLanguage;
+}
+
+export interface FeeReminderLogItem {
+  id: string;
+  studentId: string;
+  studentIdCode: string;
+  studentName: string;
+  parentName: string;
+  parentPhone: string;
+  classLevel: string;
+  dueAmount: number;
+  deadlineDate: string;
+  daysPastDeadline: number;
+  channel: 'WhatsApp' | 'In-App Notification' | 'WhatsApp + In-App';
+  messageText: string;
+  sentAt: string;
+  status: 'Sent' | 'Acknowledged' | 'Automated Trigger';
+  language: FeeReminderLanguage;
 }
 
 export interface InquiryItem {

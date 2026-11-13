@@ -8,7 +8,8 @@ import {
   PdfExportRequest,
   getWingForClass,
   computeStudentFinancials,
-  buildMonthlyLedgerRows
+  buildMonthlyLedgerRows,
+  formatMonthYearFromDate
 } from '../utils/ledgerHelpers';
 import {
   Printer,
@@ -852,58 +853,94 @@ export const PrintPdfExportModal: React.FC<PrintPdfExportModalProps> = ({
                       <thead>
                         <tr className="bg-slate-50 border-b border-slate-300 text-slate-600 text-[10px] uppercase">
                           <th className="py-1.5 px-3">Month</th>
-                          <th className="py-1.5 px-2.5 text-right">Base Fee</th>
-                          <th className="py-1.5 px-2.5 text-right">Discount</th>
-                          <th className="py-1.5 px-2.5 text-right">Net Fee</th>
-                          <th className="py-1.5 px-3">Payment Status</th>
-                          <th className="py-1.5 px-3">Receipt No. &amp; Date</th>
+                          <th className="py-1.5 px-2 text-right">Prev. Back Due / Adv.</th>
+                          <th className="py-1.5 px-2 text-right">Month Fee</th>
+                          <th className="py-1.5 px-2 text-right">Paid</th>
+                          <th className="py-1.5 px-2 text-right">Fwd Due</th>
+                          <th className="py-1.5 px-3">Status</th>
+                          <th className="py-1.5 px-3">Receipt, Date &amp; Paid Month</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200">
-                        {monthlyRows.map((row) => (
-                          <tr key={row.key}>
-                            <td className="py-1.5 px-3 font-bold text-slate-900">{row.label}</td>
-                            <td className="py-1.5 px-2.5 text-right font-mono text-slate-600">
-                              ₹{row.baseFee}
-                            </td>
-                            <td className="py-1.5 px-2.5 text-right font-mono text-emerald-800">
-                              {row.discountPercent}%
-                            </td>
-                            <td className="py-1.5 px-2.5 text-right font-mono font-bold text-slate-900">
-                              ₹{row.netPayable}
-                            </td>
-                            <td className="py-1.5 px-3">
-                              {row.status === 'Paid' && (
-                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded">
-                                  <CheckCircle2 className="w-2.5 h-2.5" />
-                                  Paid
-                                </span>
-                              )}
-                              {row.status === 'Pending' && (
-                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
-                                  <AlertCircle className="w-2.5 h-2.5" />
-                                  Pending
-                                </span>
-                              )}
-                              {row.status === 'Waived' && (
-                                <span className="text-[10px] font-bold text-purple-800 bg-purple-100 px-1.5 py-0.5 rounded">
-                                  100% Charity Waived
-                                </span>
-                              )}
-                              {row.status === 'Before Admission' && (
-                                <span className="text-[10px] text-slate-400">Prior to Admission</span>
-                              )}
-                              {row.status === 'Disenrolled Break' && (
-                                <span className="text-[10px] font-semibold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded">
-                                  Disenrolled Break
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-1.5 px-3 font-mono text-[10px] text-slate-700">
-                              {row.receiptNo} {row.receiptDate !== '—' ? `(${row.receiptDate})` : ''}
-                            </td>
-                          </tr>
-                        ))}
+                        {monthlyRows.map((row) => {
+                          const inactive =
+                            row.status === 'Before Admission' ||
+                            row.status === 'Disenrolled Break';
+                          return (
+                            <tr key={row.key}>
+                              <td className="py-1.5 px-3 font-bold text-slate-900">{row.label}</td>
+                              <td className="py-1.5 px-2 text-right font-mono">
+                                {inactive || row.status === 'Waived' ? (
+                                  '—'
+                                ) : row.backDueCarriedIn > 0 ? (
+                                  <span className="text-red-700 font-bold">
+                                    +₹{row.backDueCarriedIn} Back Due
+                                  </span>
+                                ) : row.advanceCreditIn > 0 ? (
+                                  <span className="text-sky-800 font-bold">
+                                    -₹{row.advanceCreditIn} Adv.
+                                  </span>
+                                ) : (
+                                  '₹0'
+                                )}
+                              </td>
+                              <td className="py-1.5 px-2 text-right font-mono font-bold text-slate-900">
+                                ₹{row.netPayable}
+                              </td>
+                              <td className="py-1.5 px-2 text-right font-mono text-emerald-800 font-bold">
+                                {inactive ? '—' : `₹${row.paidAmount}`}
+                              </td>
+                              <td className="py-1.5 px-2 text-right font-mono text-rose-800 font-bold">
+                                {inactive ? '—' : `₹${row.backDueCarriedForward}`}
+                              </td>
+                              <td className="py-1.5 px-3">
+                                {row.status === 'Paid' && (
+                                  <span
+                                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                      row.isAdvanceAdjusted
+                                        ? 'text-sky-900 bg-sky-100'
+                                        : 'text-emerald-800 bg-emerald-100'
+                                    }`}
+                                  >
+                                    <CheckCircle2 className="w-2.5 h-2.5" />
+                                    {row.isAdvanceAdjusted ? 'Paid (Adv. Adj.)' : 'Paid'}
+                                  </span>
+                                )}
+                                {row.status === 'Partially Paid' && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded">
+                                    <AlertCircle className="w-2.5 h-2.5" />
+                                    {row.isAdvanceAdjusted ? 'Partial (Adv.)' : 'Partially Paid'}
+                                  </span>
+                                )}
+                                {row.status === 'Pending' && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-red-800 bg-red-100 px-1.5 py-0.5 rounded">
+                                    <AlertCircle className="w-2.5 h-2.5" />
+                                    Pending
+                                  </span>
+                                )}
+                                {row.status === 'Waived' && (
+                                  <span className="text-[10px] font-bold text-purple-800 bg-purple-100 px-1.5 py-0.5 rounded">
+                                    100% Charity Waived
+                                  </span>
+                                )}
+                                {row.status === 'Before Admission' && (
+                                  <span className="text-[10px] text-slate-400">Prior to Admission</span>
+                                )}
+                                {row.status === 'Disenrolled Break' && (
+                                  <span className="text-[10px] font-semibold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded">
+                                    Disenrolled Break
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-1.5 px-3 font-mono text-[10px] text-slate-700">
+                                {row.receiptNo}
+                                {row.receiptDate !== '—'
+                                  ? ` · ${row.receiptDate} (${row.paidInMonthDisplay})`
+                                  : ''}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -912,24 +949,39 @@ export const PrintPdfExportModal: React.FC<PrintPdfExportModalProps> = ({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 print-avoid-break">
                     <div className="border border-slate-300 rounded-lg overflow-hidden">
                       <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 text-[10px] font-bold uppercase text-slate-700">
-                        Verified Payment Receipts ({student.feePayments?.length || 0})
+                        Verified Payment Collection Log ({student.feePayments?.length || 0})
                       </div>
                       <div className="divide-y divide-slate-200 text-[11px]">
                         {(student.feePayments || []).length === 0 ? (
                           <p className="p-3 text-slate-500 text-center">No fee receipts recorded yet.</p>
                         ) : (
                           (student.feePayments || []).map((p) => (
-                            <div key={p.id} className="px-3 py-1.5 flex items-center justify-between">
+                            <div key={p.id} className="px-3 py-1.5 flex items-center justify-between gap-2">
                               <div>
-                                <span className="font-mono font-bold text-emerald-800 mr-1.5">
-                                  {p.receiptNo}
-                                </span>
-                                <span className="font-semibold text-slate-800">{p.monthLabel}</span>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-mono font-bold text-emerald-800">
+                                    {p.receiptNo}
+                                  </span>
+                                  <span className="font-semibold text-slate-800">{p.monthLabel}</span>
+                                  {p.isPartialPayment && (
+                                    <span className="px-1 py-0.2 rounded bg-amber-100 text-amber-900 text-[9px] font-bold">
+                                      Partial
+                                    </span>
+                                  )}
+                                  {p.extraAdvanceAmount && p.extraAdvanceAmount > 0 ? (
+                                    <span className="px-1 py-0.2 rounded bg-sky-100 text-sky-900 text-[9px] font-bold">
+                                      +₹{p.extraAdvanceAmount} Next Mo. Adv.
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <span className="block text-[10px] text-slate-500">
-                                  {p.date} · {p.mode} · {p.session || '2026-27'}
+                                  {p.date} (Paid in {p.paidInMonth || formatMonthYearFromDate(p.date)}) ·{' '}
+                                  {p.mode} · {p.session || '2026-27'}
+                                  {p.paidByParentName ? ` · By ${p.paidByParentName}` : ''}
+                                  {p.remarks ? ` (${p.remarks})` : ''}
                                 </span>
                               </div>
-                              <span className="font-mono font-bold text-slate-900">
+                              <span className="font-mono font-bold text-slate-900 shrink-0">
                                 ₹{p.amount}
                               </span>
                             </div>

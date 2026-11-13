@@ -120,11 +120,47 @@ export interface StudentFinancials {
   fullYearSessionFee: number;
   currentSessionPaid: number;
   currentSessionPending: number;
+  advanceCreditNextMonths: number;
   fullSessionRemaining: number;
   prevYearTotalAssigned: number;
   prevYearCleared: number;
   prevYearRemainingDue: number;
   totalCombinedPending: number;
+}
+
+const FULL_MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December'
+];
+
+export function formatMonthYearFromDate(dateStr: string): string {
+  if (!dateStr || dateStr.length < 7) return 'November 2026';
+  const [yStr, mStr] = dateStr.split('-');
+  const mIdx = Number(mStr) - 1;
+  if (!yStr || mIdx < 0 || mIdx > 11) return 'November 2026';
+  return `${FULL_MONTH_NAMES[mIdx]} ${yStr}`;
+}
+
+export function getMonthKeyFromDate(dateStr: string): string {
+  if (!dateStr || dateStr.length < 7) return '2026-11';
+  return dateStr.slice(0, 7);
+}
+
+export function getMonthKeyFromLabel(label: string): string | null {
+  const found = SESSION_MONTHS.find(
+    (m) => m.label.toLowerCase() === label.trim().toLowerCase()
+  );
+  return found ? found.key : null;
 }
 
 export function computeStudentFinancials(
@@ -147,9 +183,15 @@ export function computeStudentFinancials(
 
   const fullYearSessionFee = stu.isCharitySeat ? 0 : regFee + stu.netMonthlyFee * 10;
 
-  const prevYearClearedFromReceipts = (stu.feePayments || [])
-    .filter((p) => p.isPreviousYearClearance || p.session === '2025-26')
-    .reduce((acc, p) => acc + p.amount, 0);
+  const prevYearClearedFromReceipts = (stu.feePayments || []).reduce((acc, p) => {
+    if (typeof p.prevYearClearedPart === 'number') {
+      return acc + p.prevYearClearedPart;
+    }
+    if (p.isPreviousYearClearance || p.session === '2025-26') {
+      return acc + p.amount;
+    }
+    return acc;
+  }, 0);
 
   const prevYearTotalAssigned = stu.previousYearPendingFee || 0;
   const prevYearCleared = Math.max(
@@ -160,6 +202,7 @@ export function computeStudentFinancials(
 
   const currentSessionPaid = stu.paidAmount || 0;
   const currentSessionPending = Math.max(0, currentSessionBilled - currentSessionPaid);
+  const advanceCreditNextMonths = Math.max(0, currentSessionPaid - currentSessionBilled);
   const fullSessionRemaining = Math.max(0, fullYearSessionFee - currentSessionPaid);
   const totalCombinedPending = currentSessionPending + prevYearRemainingDue;
 
@@ -170,6 +213,7 @@ export function computeStudentFinancials(
     fullYearSessionFee,
     currentSessionPaid,
     currentSessionPending,
+    advanceCreditNextMonths,
     fullSessionRemaining,
     prevYearTotalAssigned,
     prevYearCleared,
@@ -185,8 +229,22 @@ export interface MonthlyLedgerRow {
   baseFee: number;
   discountPercent: number;
   netPayable: number;
+  backDueCarriedIn: number;
+  advanceCreditIn: number;
+  totalPayableWithBackDues: number;
   paidAmount: number;
-  status: 'Paid' | 'Pending' | 'Waived' | 'Before Admission' | 'Disenrolled Break';
+  remainingAmount: number;
+  backDueCarriedForward: number;
+  isAdvanceAdjusted: boolean;
+  isBackDueClearedLater: boolean;
+  paidInMonthDisplay: string;
+  status:
+    | 'Paid'
+    | 'Partially Paid'
+    | 'Pending'
+    | 'Waived'
+    | 'Before Admission'
+    | 'Disenrolled Break';
   receiptNo: string;
   receiptDate: string;
 }
@@ -203,8 +261,79 @@ export function buildMonthlyLedgerRows(
   const reEnrollMonthKey = stu.reEnrollmentDate
     ? stu.reEnrollmentDate.slice(0, 7)
     : null;
+  const currentMonthKey = '2026-11';
+  const nextBillingMonthKey = '2026-12';
 
-  let remainingPool = Math.max(0, fin.currentSessionPaid - fin.regFee);
+  // Build chronological credit queue from session receipts
+  const sessionReceiptsChrono = (stu.feePayments || [])
+    .map((p, idx) => {
+      const sessionAmt =
+        typeof p.sessionPaidPart === 'number'
+          ? p.sessionPaidPart
+          : p.isPreviousYearClearance || p.session === '2025-26'
+          ? 0
+          : p.amount;
+      return {
+        receipt: p,
+        sessionAmt,
+        orderIdx: idx
+      };
+    })
+    .filter((x) => x.sessionAmt > 0)
+    .sort((a, b) => {
+      const cmp = (a.receipt.date || '').localeCompare(b.receipt.date || '');
+      return cmp !== 0 ? cmp : b.orderIdx - a.orderIdx;
+    });
+
+  // Deduct registration fee from earliest receipt(s)
+  let regLeft = fin.regFee;
+  let receiptTuitionSum = 0;
+  const creditQueue: {
+    receiptNo: string;
+    date: string;
+    paidInMonth: string;
+    monthKey: string;
+    remaining: number;
+  }[] = [];
+
+  for (const item of sessionReceiptsChrono) {
+    let amt = item.sessionAmt;
+    if (regLeft > 0) {
+      const regUsed = Math.min(regLeft, amt);
+      regLeft -= regUsed;
+      amt -= regUsed;
+    }
+    if (amt > 0) {
+      receiptTuitionSum += amt;
+      const rDate = item.receipt.date || stu.enrollmentDate || '2026-07-01';
+      const paidInMo =
+        item.receipt.paidInMonth || formatMonthYearFromDate(rDate);
+      const rMonthKey =
+        getMonthKeyFromLabel(paidInMo) || getMonthKeyFromDate(rDate);
+      creditQueue.push({
+        receiptNo: item.receipt.receiptNo,
+        date: rDate,
+        paidInMonth: paidInMo,
+        monthKey: rMonthKey,
+        remaining: amt
+      });
+    }
+  }
+
+  // Account for any seed/opening balance not represented by receipt records
+  const totalTuitionPool = Math.max(0, fin.currentSessionPaid - fin.regFee);
+  if (totalTuitionPool > receiptTuitionSum) {
+    const openingDiff = totalTuitionPool - receiptTuitionSum;
+    creditQueue.unshift({
+      receiptNo: 'OPENING-BAL',
+      date: stu.enrollmentDate || '2026-07-01',
+      paidInMonth: formatMonthYearFromDate(stu.enrollmentDate || '2026-07-01'),
+      monthKey: enrollMonthKey,
+      remaining: openingDiff
+    });
+  }
+
+  let runningBackDue = 0;
 
   return SESSION_MONTHS.map((m) => {
     const isBeforeAdmission = m.key < enrollMonthKey;
@@ -213,45 +342,237 @@ export function buildMonthlyLedgerRows(
       m.key > disenrollMonthKey &&
       (reEnrollMonthKey === null || m.key < reEnrollMonthKey);
 
-    const matchingReceipt = (stu.feePayments || []).find(
-      (p) =>
-        !p.isPreviousYearClearance &&
-        p.monthLabel.toLowerCase().includes(m.label.split(' ')[0].toLowerCase())
-    );
+    const isWaived = stu.isCharitySeat || stu.netMonthlyFee === 0;
+    const isInactive = isBeforeAdmission || isDuringDisenrolledBreak;
+    const netPayable = isInactive ? 0 : stu.netMonthlyFee;
+
+    const backDueCarriedIn =
+      m.key <= nextBillingMonthKey && !isInactive && !isWaived ? runningBackDue : 0;
 
     let status: MonthlyLedgerRow['status'] = 'Pending';
     let paidForMonth = 0;
+    let advanceCreditIn = 0;
+    let isAdvanceAdjusted = false;
+    let isBackDueClearedLater = false;
+    const appliedCredits: {
+      receiptNo: string;
+      date: string;
+      paidInMonth: string;
+      monthKey: string;
+      amount: number;
+    }[] = [];
 
     if (isBeforeAdmission) {
       status = 'Before Admission';
     } else if (isDuringDisenrolledBreak) {
       status = 'Disenrolled Break';
-    } else if (stu.isCharitySeat || stu.netMonthlyFee === 0) {
+    } else if (isWaived) {
       status = 'Waived';
-    } else if (matchingReceipt) {
-      status = 'Paid';
-      paidForMonth = stu.netMonthlyFee;
-      remainingPool = Math.max(0, remainingPool - stu.netMonthlyFee);
-    } else if (remainingPool >= stu.netMonthlyFee && stu.netMonthlyFee > 0) {
-      status = 'Paid';
-      paidForMonth = stu.netMonthlyFee;
-      remainingPool -= stu.netMonthlyFee;
     } else {
-      status = 'Pending';
+      let need = netPayable;
+      for (const cred of creditQueue) {
+        if (need <= 0) break;
+        if (cred.remaining <= 0) continue;
+        const take = Math.min(need, cred.remaining);
+        cred.remaining -= take;
+        need -= take;
+        paidForMonth += take;
+
+        if (cred.monthKey < m.key) {
+          advanceCreditIn += take;
+          isAdvanceAdjusted = true;
+        } else if (cred.monthKey > m.key) {
+          isBackDueClearedLater = true;
+        }
+
+        appliedCredits.push({
+          receiptNo: cred.receiptNo,
+          date: cred.date,
+          paidInMonth: cred.paidInMonth,
+          monthKey: cred.monthKey,
+          amount: take
+        });
+      }
+
+      if (paidForMonth >= netPayable && netPayable > 0) {
+        status = 'Paid';
+      } else if (paidForMonth > 0) {
+        status = 'Partially Paid';
+      } else {
+        status = 'Pending';
+      }
     }
+
+    const remainingAmount =
+      isInactive || isWaived ? 0 : Math.max(0, netPayable - paidForMonth);
+
+    if (!isInactive && !isWaived && m.key <= currentMonthKey) {
+      runningBackDue += remainingAmount;
+    }
+
+    const backDueCarriedForward =
+      m.key <= currentMonthKey && !isInactive && !isWaived ? runningBackDue : 0;
+
+    const totalPayableWithBackDues = netPayable + backDueCarriedIn;
+
+    const lastCredit = appliedCredits[appliedCredits.length - 1];
+    const receiptNoDisplay = lastCredit
+      ? appliedCredits.length > 1
+        ? `${lastCredit.receiptNo} (+${appliedCredits.length - 1})`
+        : lastCredit.receiptNo
+      : '—';
+
+    const receiptDateDisplay = lastCredit ? lastCredit.date : '—';
+    const paidInMonthDisplay = lastCredit ? lastCredit.paidInMonth : '—';
 
     return {
       ...m,
       baseFee: stu.baseMonthlyFee,
       discountPercent: stu.discountPercent,
-      netPayable:
-        status === 'Before Admission' || status === 'Disenrolled Break'
-          ? 0
-          : stu.netMonthlyFee,
+      netPayable,
+      backDueCarriedIn,
+      advanceCreditIn,
+      totalPayableWithBackDues,
       paidAmount: paidForMonth,
+      remainingAmount,
+      backDueCarriedForward,
+      isAdvanceAdjusted,
+      isBackDueClearedLater,
+      paidInMonthDisplay,
       status,
-      receiptNo: matchingReceipt?.receiptNo || (status === 'Paid' ? 'LEDGER-ADJ' : '—'),
-      receiptDate: matchingReceipt?.date || (status === 'Paid' ? stu.enrollmentDate : '—')
+      receiptNo: receiptNoDisplay,
+      receiptDate: receiptDateDisplay
     };
   });
+}
+
+export interface SmartPaymentPreview {
+  prevYearCleared: number;
+  sessionPaidDelta: number;
+  backDuesCleared: number;
+  currentMonthPaid: number;
+  extraAdvanceToNextMonths: number;
+  breakdown: {
+    label: string;
+    monthKey?: string;
+    amount: number;
+    type: 'prev-year' | 'back-due' | 'current-month' | 'next-month-advance';
+  }[];
+  remainingPrevYearAfter: number;
+  remainingSessionAfter: number;
+  remainingCombinedAfter: number;
+}
+
+export function previewSmartPaymentAllocation(
+  stu: StudentRecord,
+  feePlans: FeePlan[],
+  paymentAmount: number,
+  paymentDate: string,
+  paidInMonthLabel: string,
+  includePrevYearDues: boolean
+): SmartPaymentPreview {
+  const fin = computeStudentFinancials(stu, feePlans);
+  const rows = buildMonthlyLedgerRows(stu, feePlans);
+  const paidMonthKey =
+    getMonthKeyFromLabel(paidInMonthLabel) || getMonthKeyFromDate(paymentDate);
+
+  let remaining = Math.max(0, Math.round(paymentAmount));
+  const breakdown: SmartPaymentPreview['breakdown'] = [];
+
+  let prevYearCleared = 0;
+  if (includePrevYearDues && fin.prevYearRemainingDue > 0 && remaining > 0) {
+    prevYearCleared = Math.min(remaining, fin.prevYearRemainingDue);
+    remaining -= prevYearCleared;
+    breakdown.push({
+      label: 'Prev. Year (2025-26) Back Dues',
+      amount: prevYearCleared,
+      type: 'prev-year'
+    });
+  }
+
+  let backDuesCleared = 0;
+  let currentMonthPaid = 0;
+  let extraAdvanceToNextMonths = 0;
+
+  // Registration fee if unpaid in current session
+  const regUnpaid = stu.isCharitySeat
+    ? 0
+    : Math.max(0, fin.regFee - fin.currentSessionPaid);
+  if (regUnpaid > 0 && remaining > 0) {
+    const regUsed = Math.min(remaining, regUnpaid);
+    remaining -= regUsed;
+    backDuesCleared += regUsed;
+    breakdown.push({
+      label: 'Registration / Kit Fee Due',
+      amount: regUsed,
+      type: 'back-due'
+    });
+  }
+
+  // Chronological FIFO across active session months
+  for (const row of rows) {
+    if (remaining <= 0) break;
+    if (
+      row.status === 'Before Admission' ||
+      row.status === 'Disenrolled Break' ||
+      row.status === 'Waived'
+    ) {
+      continue;
+    }
+    if (row.remainingAmount <= 0) continue;
+
+    const used = Math.min(remaining, row.remainingAmount);
+    remaining -= used;
+
+    if (row.key < paidMonthKey) {
+      backDuesCleared += used;
+      breakdown.push({
+        label: `${row.label} Back Due Cleared`,
+        monthKey: row.key,
+        amount: used,
+        type: 'back-due'
+      });
+    } else if (row.key === paidMonthKey) {
+      currentMonthPaid += used;
+      breakdown.push({
+        label: `${row.label} Fee Paid`,
+        monthKey: row.key,
+        amount: used,
+        type: 'current-month'
+      });
+    } else {
+      extraAdvanceToNextMonths += used;
+      breakdown.push({
+        label: `${row.label} Adjusted (Next Month Adv.)`,
+        monthKey: row.key,
+        amount: used,
+        type: 'next-month-advance'
+      });
+    }
+  }
+
+  if (remaining > 0) {
+    extraAdvanceToNextMonths += remaining;
+    breakdown.push({
+      label: 'Advance Credit Carried to Upcoming Session',
+      amount: remaining,
+      type: 'next-month-advance'
+    });
+  }
+
+  const sessionPaidDelta = Math.max(0, Math.round(paymentAmount) - prevYearCleared);
+  const remainingPrevYearAfter = Math.max(0, fin.prevYearRemainingDue - prevYearCleared);
+  const remainingSessionAfter = Math.max(0, fin.currentSessionPending - sessionPaidDelta);
+
+  return {
+    prevYearCleared,
+    sessionPaidDelta,
+    backDuesCleared,
+    currentMonthPaid,
+    extraAdvanceToNextMonths,
+    breakdown,
+    remainingPrevYearAfter,
+    remainingSessionAfter,
+    remainingCombinedAfter: remainingPrevYearAfter + remainingSessionAfter
+  };
 }

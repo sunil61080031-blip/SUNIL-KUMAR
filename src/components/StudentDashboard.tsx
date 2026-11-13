@@ -5,7 +5,10 @@ import {
   FeePlan,
   InstituteConfig,
   AcademicWing,
-  FeePaymentItem
+  FeePaymentItem,
+  FeeReminderLogItem,
+  FeeReminderSettings,
+  FeeReminderLanguage
 } from '../types';
 import {
   Layers,
@@ -27,15 +30,32 @@ import {
   Sparkles,
   Filter,
   Printer,
-  FileText
+  FileText,
+  MessageCircle,
+  BellRing,
+  Send,
+  Copy,
+  Check,
+  Trash2,
+  Clock,
+  Wallet,
+  Receipt
 } from 'lucide-react';
 import {
   PdfExportRequest,
   ALL_CLASSES,
+  SESSION_MONTHS,
   getWingForClass,
   computeStudentFinancials as computeFinancialsWithPlans,
-  buildMonthlyLedgerRows
+  buildMonthlyLedgerRows,
+  formatMonthYearFromDate,
+  previewSmartPaymentAllocation
 } from '../utils/ledgerHelpers';
+import {
+  buildFeeReminderMessage,
+  buildWhatsAppParentUrl,
+  computeDaysPastDeadline
+} from '../utils/reminderHelpers';
 
 export { getWingForClass };
 
@@ -50,7 +70,8 @@ interface StudentDashboardProps {
     studentId: string,
     amountPaid: number,
     mode: 'Cash' | 'UPI / Online',
-    newTotalPrevPending?: number
+    newTotalPrevPending?: number,
+    meta?: { paidByParentName?: string; remarks?: string; date?: string }
   ) => void;
   onPromoteStudent: (
     studentId: string,
@@ -72,12 +93,25 @@ interface StudentDashboardProps {
   onDisenrollStudent: (studentId: string, date: string, reason?: string) => void;
   onReEnrollStudent: (studentId: string, date: string, batchCode?: string) => void;
   onOpenPdfExport?: (req: PdfExportRequest) => void;
+  feeReminders: FeeReminderLogItem[];
+  feeReminderSettings: FeeReminderSettings;
+  onUpdateReminderSettings: (settings: FeeReminderSettings) => void;
+  onDispatchFeeReminder: (reminder: FeeReminderLogItem) => void;
+  onBulkDispatchReminders: (reminders: FeeReminderLogItem[]) => void;
+  onClearFeeReminders: () => void;
 }
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   students,
   batches,
   feePlans,
+  instituteConfig,
+  feeReminders,
+  feeReminderSettings,
+  onUpdateReminderSettings,
+  onDispatchFeeReminder,
+  onBulkDispatchReminders,
+  onClearFeeReminders,
   onRecordFeePayment,
   onClearPreviousYearFee,
   onPromoteStudent,
@@ -98,8 +132,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   // 4. Internal Sub-Section Tabs to minimize scrolling
   const [dashboardSubTab, setDashboardSubTab] = useState<
-    'directory' | 'ledger' | 'promotion'
+    'directory' | 'ledger' | 'promotion' | 'reminders'
   >('directory');
+
+  // Reminder feedback state
+  const [reminderBannerMsg, setReminderBannerMsg] = useState<string | null>(null);
+  const [copiedReminderStudentId, setCopiedReminderStudentId] = useState<string | null>(null);
+  const [copiedBulkQueue, setCopiedBulkQueue] = useState(false);
 
   // 5. Selected Student for Ledger / Promotion inspection
   const [selectedStudentId, setSelectedStudentId] = useState<string>(
@@ -108,6 +147,16 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   // Ledger Sub-View: Monthly-Wise vs Session-Wise
   const [ledgerMode, setLedgerMode] = useState<'monthly' | 'session'>('monthly');
+
+  // Parent Partial Payment Collection Log Box State
+  const [collectDate, setCollectDate] = useState<string>('2026-11-13');
+  const [collectPaidInMonth, setCollectPaidInMonth] = useState<string>('November 2026');
+  const [includePrevYearInAuto, setIncludePrevYearInAuto] = useState<boolean>(true);
+  const [collectAmount, setCollectAmount] = useState<string>('');
+  const [collectMode, setCollectMode] = useState<'Cash' | 'UPI / Online'>('UPI / Online');
+  const [collectParentName, setCollectParentName] = useState<string>('');
+  const [collectRemarks, setCollectRemarks] = useState<string>('');
+  const [collectErrorMsg, setCollectErrorMsg] = useState<string | null>(null);
 
   // Previous Year Fee Form State
   const [prevPayAmount, setPrevPayAmount] = useState<string>('');
@@ -134,6 +183,131 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   // Helper to compute fee metrics for any student
   const computeStudentFinancials = (stu: StudentRecord) =>
     computeFinancialsWithPlans(stu, feePlans);
+
+  const daysPastDeadline = useMemo(
+    () => computeDaysPastDeadline(feeReminderSettings.activeDeadlineDate),
+    [feeReminderSettings.activeDeadlineDate]
+  );
+
+  // Overdue students exceeding deadline within current scope
+  const overdueReminderTargets = useMemo(() => {
+    return students
+      .filter((stu) => {
+        if (stu.enrollmentStatus === 'Disenrolled') return false;
+        const fin = computeFinancialsWithPlans(stu, feePlans);
+        return fin.totalCombinedPending > 0;
+      })
+      .map((stu) => {
+        const fin = computeFinancialsWithPlans(stu, feePlans);
+        const msg = buildFeeReminderMessage(
+          stu,
+          fin,
+          instituteConfig,
+          feeReminderSettings.activeDeadlineDate,
+          daysPastDeadline,
+          feeReminderSettings.defaultLanguage
+        );
+        const waUrl = buildWhatsAppParentUrl(stu.phone, msg);
+        const latestReminder = feeReminders.find((r) => r.studentId === stu.id) || null;
+        return {
+          student: stu,
+          financials: fin,
+          messageText: msg,
+          waUrl,
+          latestReminder
+        };
+      });
+  }, [
+    students,
+    feePlans,
+    instituteConfig,
+    feeReminderSettings.activeDeadlineDate,
+    feeReminderSettings.defaultLanguage,
+    daysPastDeadline,
+    feeReminders
+  ]);
+
+  const createAndDispatchReminder = (
+    stu: StudentRecord,
+    dueAmount: number,
+    messageText: string,
+    channel: FeeReminderLogItem['channel']
+  ) => {
+    const newLog: FeeReminderLogItem = {
+      id: `rem-${Date.now()}-${stu.id}`,
+      studentId: stu.id,
+      studentIdCode: stu.studentIdCode,
+      studentName: stu.studentName,
+      parentName: stu.parentName,
+      parentPhone: stu.phone,
+      classLevel: stu.classLevel,
+      dueAmount,
+      deadlineDate: feeReminderSettings.activeDeadlineDate,
+      daysPastDeadline,
+      channel,
+      messageText,
+      sentAt: new Date().toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      status: 'Sent',
+      language: feeReminderSettings.defaultLanguage
+    };
+    onDispatchFeeReminder(newLog);
+    setReminderBannerMsg(
+      `${channel} fee deadline reminder logged for ${stu.parentName} (${stu.studentName} · ₹${dueAmount.toLocaleString('en-IN')} due).`
+    );
+  };
+
+  const handleBulkSendInAppReminders = () => {
+    if (overdueReminderTargets.length === 0) return;
+    const nowStamp = new Date().toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    const logs: FeeReminderLogItem[] = overdueReminderTargets.map((item) => ({
+      id: `rem-bulk-${Date.now()}-${item.student.id}`,
+      studentId: item.student.id,
+      studentIdCode: item.student.studentIdCode,
+      studentName: item.student.studentName,
+      parentName: item.student.parentName,
+      parentPhone: item.student.phone,
+      classLevel: item.student.classLevel,
+      dueAmount: item.financials.totalCombinedPending,
+      deadlineDate: feeReminderSettings.activeDeadlineDate,
+      daysPastDeadline,
+      channel: 'In-App Notification',
+      messageText: item.messageText,
+      sentAt: nowStamp,
+      status: 'Sent',
+      language: feeReminderSettings.defaultLanguage
+    }));
+    onBulkDispatchReminders(logs);
+    setReminderBannerMsg(
+      `Dispatched ${logs.length} automated In-App Fee Deadline Notifications to parent Student Portal accounts.`
+    );
+  };
+
+  const handleCopyBulkWhatsAppMessages = async () => {
+    if (overdueReminderTargets.length === 0) return;
+    const combined = overdueReminderTargets
+      .map(
+        (t, idx) =>
+          `[${idx + 1}] Parent: ${t.student.parentName} (${t.student.phone})\n${t.messageText}`
+      )
+      .join('\n\n------------------------------\n\n');
+    try {
+      await navigator.clipboard.writeText(combined);
+      setCopiedBulkQueue(true);
+      setTimeout(() => setCopiedBulkQueue(false), 2500);
+    } catch {
+      // Fallback ignored
+    }
+  };
 
   // Wing Switching Handler
   const handleSelectWing = (wing: AcademicWing) => {
@@ -265,22 +439,173 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     return buildMonthlyLedgerRows(activeStudent, feePlans);
   }, [activeStudent, feePlans]);
 
-  // Quick 1-click Pay Month handler
-  const handleQuickPayMonth = (monthLabel: string, amount: number) => {
+  // Sync collection form defaults when switching activeStudent
+  React.useEffect(() => {
     if (!activeStudent) return;
+    setCollectParentName(activeStudent.parentName || '');
+    setCollectErrorMsg(null);
+    setCollectAmount('');
+    setCollectRemarks('');
+  }, [activeStudent?.id]);
+
+  // Live preview of FIFO settlement (Prev Year Back Dues -> Prior Month Back Dues -> Paid Month -> Next Month Advance)
+  const livePaymentPreview = useMemo(() => {
+    const amt = Math.round(Number(collectAmount) || 0);
+    if (!activeStudent || amt <= 0) return null;
+    return previewSmartPaymentAllocation(
+      activeStudent,
+      feePlans,
+      amt,
+      collectDate,
+      collectPaidInMonth,
+      includePrevYearInAuto
+    );
+  }, [
+    activeStudent,
+    feePlans,
+    collectAmount,
+    collectDate,
+    collectPaidInMonth,
+    includePrevYearInAuto
+  ]);
+
+  // Quick 1-click Pay Month handler (pays remaining balance for the month)
+  const handleQuickPayMonth = (monthLabel: string, amount: number) => {
+    if (!activeStudent || amount <= 0) return;
+    const todayStr = collectDate || new Date().toISOString().slice(0, 10);
+    const paidInMo = formatMonthYearFromDate(todayStr);
+    const preview = previewSmartPaymentAllocation(
+      activeStudent,
+      feePlans,
+      amount,
+      todayStr,
+      paidInMo,
+      false
+    );
     const newPayment: FeePaymentItem = {
       id: `fp-${Date.now()}`,
       receiptNo: `REC-2026-${Math.floor(100 + Math.random() * 900)}`,
-      date: new Date().toISOString().slice(0, 10),
-      monthLabel,
+      date: todayStr,
+      paidInMonth: paidInMo,
+      monthLabel:
+        preview.extraAdvanceToNextMonths > 0
+          ? `${monthLabel} (+₹${preview.extraAdvanceToNextMonths} Adv. Next Mo.)`
+          : monthLabel,
       amount,
+      prevYearClearedPart: 0,
+      sessionPaidPart: amount,
+      extraAdvanceAmount: preview.extraAdvanceToNextMonths,
+      adjustmentBreakdown: preview.breakdown,
       mode: 'Cash',
-      session: activeStudent.academicSession || '2026-27'
+      session: activeStudent.academicSession || '2026-27',
+      isPartialPayment: false,
+      paidByParentName: activeStudent.parentName,
+      collectedBy: instituteConfig.founder,
+      remarks: `Paid on ${todayStr} (${paidInMo}) for ${monthLabel}`
     };
     onRecordFeePayment(activeStudent.id, newPayment);
     setLedgerBannerMessage(
-      `Recorded ₹${amount} fee receipt (${newPayment.receiptNo}) for ${monthLabel}.`
+      `Recorded ₹${amount} on ${todayStr} (Paid in ${paidInMo}, Receipt ${newPayment.receiptNo}) for ${monthLabel}.`
     );
+  };
+
+  // Pre-fill Collection Box for Partial Month Payment
+  const handlePrefillPartialForMonth = (monthLabel: string, remainingAmt: number) => {
+    const suggested = Math.max(50, Math.round(remainingAmt / 2));
+    setCollectAmount(String(suggested));
+    setCollectRemarks(
+      `Partial installment collected in ${collectPaidInMonth} toward ${monthLabel} (₹${remainingAmt} due)`
+    );
+    setCollectErrorMsg(null);
+    const boxEl = document.getElementById('ledger-payment-collection-box');
+    if (boxEl) {
+      boxEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  // Submit Parent Partial / Back-Due + Extra Advance Payment Collection
+  const handlePartialCollectionSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeStudent || !activeFinancials) return;
+    setCollectErrorMsg(null);
+
+    const amountNum = Math.round(Number(collectAmount) || 0);
+    if (amountNum <= 0) {
+      setCollectErrorMsg('Please enter a valid collected amount greater than ₹0.');
+      return;
+    }
+
+    const payerName = collectParentName.trim() || activeStudent.parentName;
+    const dateUsed = collectDate || new Date().toISOString().slice(0, 10);
+    const paidInMo = collectPaidInMonth || formatMonthYearFromDate(dateUsed);
+
+    const preview = previewSmartPaymentAllocation(
+      activeStudent,
+      feePlans,
+      amountNum,
+      dateUsed,
+      paidInMo,
+      includePrevYearInAuto
+    );
+
+    const isPartial = preview.remainingCombinedAfter > 0;
+    const summaryTags: string[] = [];
+    if (preview.prevYearCleared > 0) {
+      summaryTags.push(`Prev. Yr ₹${preview.prevYearCleared}`);
+    }
+    if (preview.backDuesCleared > 0) {
+      summaryTags.push(`Back Dues ₹${preview.backDuesCleared}`);
+    }
+    if (preview.currentMonthPaid > 0) {
+      summaryTags.push(`${paidInMo} ₹${preview.currentMonthPaid}`);
+    }
+    if (preview.extraAdvanceToNextMonths > 0) {
+      summaryTags.push(`Next Mo. Adv. ₹${preview.extraAdvanceToNextMonths}`);
+    }
+
+    const receiptMonthLabel =
+      summaryTags.length > 0
+        ? `Paid in ${paidInMo} (${summaryTags.join(' · ')})`
+        : `Paid in ${paidInMo}`;
+
+    const newPayment: FeePaymentItem = {
+      id: `fp-${Date.now()}`,
+      receiptNo: `${
+        preview.extraAdvanceToNextMonths > 0 ? 'ADV' : isPartial ? 'PART' : 'REC'
+      }-2026-${Math.floor(100 + Math.random() * 900)}`,
+      date: dateUsed,
+      paidInMonth: paidInMo,
+      monthLabel: receiptMonthLabel,
+      session: activeStudent.academicSession || '2026-27',
+      prevYearClearedPart: preview.prevYearCleared,
+      sessionPaidPart: preview.sessionPaidDelta,
+      extraAdvanceAmount: preview.extraAdvanceToNextMonths,
+      adjustmentBreakdown: preview.breakdown,
+      isPreviousYearClearance: preview.prevYearCleared > 0 && preview.sessionPaidDelta === 0,
+      isPartialPayment: isPartial,
+      paidByParentName: payerName,
+      collectedBy: instituteConfig.founder,
+      remarks:
+        collectRemarks.trim() ||
+        (preview.extraAdvanceToNextMonths > 0
+          ? `Cleared previous dues; extra ₹${preview.extraAdvanceToNextMonths} adjusted to next month(s)`
+          : isPartial
+          ? `Partial installment paid by ${payerName} on ${dateUsed}`
+          : `Full dues cleared by ${payerName} on ${dateUsed}`),
+      amount: amountNum,
+      mode: collectMode
+    };
+
+    onRecordFeePayment(activeStudent.id, newPayment);
+    setLedgerBannerMessage(
+      `Saved ${newPayment.receiptNo}: ₹${amountNum.toLocaleString('en-IN')} collected on ${dateUsed} (Paid in ${paidInMo}). ${
+        preview.extraAdvanceToNextMonths > 0
+          ? `Previous dues cleared & extra ₹${preview.extraAdvanceToNextMonths.toLocaleString('en-IN')} adjusted forward to next month(s)!`
+          : `Remaining Balance Due: ₹${preview.remainingCombinedAfter.toLocaleString('en-IN')}.`
+      }`
+    );
+    setCollectAmount('');
+    setCollectRemarks('');
   };
 
   // Clear Previous Year Pending Fee handler
@@ -666,7 +991,15 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setDashboardSubTab('reminders')}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-800 text-white flex items-center gap-1.5 shadow-2xs cursor-pointer"
+              >
+                <MessageCircle className="w-3.5 h-3.5" />
+                <span>Send WhatsApp / In-App Reminders ({overdueReminderTargets.length})</span>
+              </button>
               <button
                 type="button"
                 onClick={() =>
@@ -742,6 +1075,21 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             >
               <TrendingUp className="w-4 h-4" />
               <span>3. Class Promotion & Session Upgrade</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setDashboardSubTab('reminders')}
+              className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-all cursor-pointer ${
+                dashboardSubTab === 'reminders'
+                  ? 'bg-red-600 text-white shadow-xs'
+                  : overdueReminderTargets.length > 0
+                  ? 'bg-red-50 text-red-800 border border-red-200 hover:bg-red-100'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <BellRing className="w-4 h-4" />
+              <span>4. Fee Reminders ({overdueReminderTargets.length})</span>
             </button>
           </div>
 
@@ -1054,6 +1402,43 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex flex-wrap items-center justify-end gap-1.5">
+                              {isOverdue && (
+                                <a
+                                  href={buildWhatsAppParentUrl(
+                                    stu.phone,
+                                    buildFeeReminderMessage(
+                                      stu,
+                                      fin,
+                                      instituteConfig,
+                                      feeReminderSettings.activeDeadlineDate,
+                                      daysPastDeadline,
+                                      feeReminderSettings.defaultLanguage
+                                    )
+                                  )}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={() =>
+                                    createAndDispatchReminder(
+                                      stu,
+                                      fin.totalCombinedPending,
+                                      buildFeeReminderMessage(
+                                        stu,
+                                        fin,
+                                        instituteConfig,
+                                        feeReminderSettings.activeDeadlineDate,
+                                        daysPastDeadline,
+                                        feeReminderSettings.defaultLanguage
+                                      ),
+                                      'WhatsApp + In-App'
+                                    )
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[11px] inline-flex items-center gap-1 shadow-2xs"
+                                  title={`Send WhatsApp Fee Reminder to ${stu.parentName} (${stu.phone})`}
+                                >
+                                  <MessageCircle className="w-3 h-3" />
+                                  <span>Remind Parent</span>
+                                </a>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => inspectStudentInTab(stu, 'ledger')}
@@ -1301,7 +1686,457 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               )}
             </div>
 
-            {/* MONTHLY-WISE LEDGER VIEW */}
+            {/* PARENT PARTIAL PAYMENT COLLECTION & LOG BOX (Back Dues + Date/Month Paid + Next-Month Advance) */}
+            <div
+              id="ledger-payment-collection-box"
+              className="grid grid-cols-1 lg:grid-cols-12 gap-5"
+            >
+              {/* Left 5 Cols: Collect Partial / Back-Due + Extra Advance Payment Form */}
+              <form
+                onSubmit={handlePartialCollectionSubmit}
+                className="lg:col-span-5 bg-white rounded-2xl p-5 border-2 border-emerald-200 shadow-xs space-y-3.5"
+              >
+                <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 mb-1">
+                      <Wallet className="w-3 h-3" />
+                      <span>Parent Installment & Advance Desk</span>
+                    </span>
+                    <h4 className="text-sm font-extrabold text-slate-900">
+                      Collect Payment (Back Dues + Next Month Adjust)
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      Clears previous back dues first; any remaining extra adjusts into the next month automatically.
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                      Total Pending
+                    </span>
+                    <span
+                      className={`font-mono text-base font-black ${
+                        activeFinancials.totalCombinedPending > 0
+                          ? 'text-red-700'
+                          : 'text-emerald-700'
+                      }`}
+                    >
+                      ₹{activeFinancials.totalCombinedPending.toLocaleString('en-IN')}
+                    </span>
+                    {activeFinancials.advanceCreditNextMonths > 0 && (
+                      <span className="block font-mono text-[10px] font-bold text-sky-700">
+                        +₹{activeFinancials.advanceCreditNextMonths.toLocaleString('en-IN')} Adv. Credit
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Quick Partial / Full / Advance Preset Buttons */}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                    Quick Partial / Full / Advance Presets:
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      {
+                        label: `50% Mo (₹${Math.max(50, Math.round((activeStudent.netMonthlyFee || 500) / 2))})`,
+                        val: Math.max(50, Math.round((activeStudent.netMonthlyFee || 500) / 2))
+                      },
+                      {
+                        label: `1 Mo (₹${activeStudent.netMonthlyFee || 0})`,
+                        val: activeStudent.netMonthlyFee || 0
+                      },
+                      ...(activeFinancials.currentSessionPending > 0
+                        ? [
+                            {
+                              label: `Session Due (₹${activeFinancials.currentSessionPending})`,
+                              val: activeFinancials.currentSessionPending
+                            }
+                          ]
+                        : []),
+                      ...(activeFinancials.totalCombinedPending > 0
+                        ? [
+                            {
+                              label: `All Back Dues (₹${activeFinancials.totalCombinedPending})`,
+                              val: activeFinancials.totalCombinedPending
+                            },
+                            {
+                              label: `Clear + 1 Mo Adv (₹${
+                                activeFinancials.totalCombinedPending +
+                                (activeStudent.netMonthlyFee || 0)
+                              })`,
+                              val:
+                                activeFinancials.totalCombinedPending +
+                                (activeStudent.netMonthlyFee || 0)
+                            }
+                          ]
+                        : [
+                            {
+                              label: `Advance Next Mo (₹${activeStudent.netMonthlyFee || 500})`,
+                              val: activeStudent.netMonthlyFee || 500
+                            }
+                          ])
+                    ]
+                      .filter((p) => p.val > 0)
+                      .map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            setCollectAmount(String(preset.val));
+                            setCollectErrorMsg(null);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-emerald-100 text-slate-800 hover:text-emerald-900 border border-slate-200 text-[11px] font-bold font-mono transition-colors cursor-pointer"
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+
+                {collectErrorMsg && (
+                  <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-bold">
+                    {collectErrorMsg}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Payment Date
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={collectDate}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCollectDate(val);
+                        if (val) setCollectPaidInMonth(formatMonthYearFromDate(val));
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 font-mono text-slate-900 focus:outline-none focus:border-emerald-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Paid In Month (Logged Month)
+                    </label>
+                    <select
+                      value={collectPaidInMonth}
+                      onChange={(e) => setCollectPaidInMonth(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                    >
+                      {SESSION_MONTHS.map((m) => (
+                        <option key={m.key} value={m.label}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Amount Collected (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={collectAmount}
+                      onChange={(e) => {
+                        setCollectAmount(e.target.value);
+                        setCollectErrorMsg(null);
+                      }}
+                      placeholder="e.g. 1200"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white font-mono font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Payment Mode
+                    </label>
+                    <select
+                      value={collectMode}
+                      onChange={(e) => setCollectMode(e.target.value as 'Cash' | 'UPI / Online')}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white font-semibold text-slate-900"
+                    >
+                      <option value="UPI / Online">UPI / Online</option>
+                      <option value="Cash">Cash at Desk</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Paid By (Parent / Guardian)
+                    </label>
+                    <input
+                      type="text"
+                      value={collectParentName}
+                      onChange={(e) => setCollectParentName(e.target.value)}
+                      placeholder={activeStudent.parentName}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 text-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      Remarks / Promise Note
+                    </label>
+                    <input
+                      type="text"
+                      value={collectRemarks}
+                      onChange={(e) => setCollectRemarks(e.target.value)}
+                      placeholder="Optional note..."
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 text-slate-900"
+                    />
+                  </div>
+
+                  {activeFinancials.prevYearRemainingDue > 0 && (
+                    <label className="sm:col-span-2 flex items-start gap-2 p-2.5 rounded-xl bg-rose-50/80 border border-rose-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={includePrevYearInAuto}
+                        onChange={(e) => setIncludePrevYearInAuto(e.target.checked)}
+                        className="mt-0.5 rounded text-emerald-700"
+                      />
+                      <span className="text-[11px] text-rose-950 leading-snug">
+                        <strong>Clear Prev. Year (2025-26) Back Dues First (₹{activeFinancials.prevYearRemainingDue})</strong>{' '}
+                        before current session months &amp; next-month advance adjustment.
+                      </span>
+                    </label>
+                  )}
+                </div>
+
+                {/* Live Back-Due Clearing & Next-Month Advance Adjustment Preview */}
+                {livePaymentPreview && (
+                  <div className="p-3 rounded-xl bg-slate-900 text-white space-y-2 text-[11px]">
+                    <div className="flex items-center justify-between border-b border-slate-700 pb-1.5">
+                      <span className="font-bold text-emerald-300 uppercase tracking-wider text-[10px]">
+                        Live Adjustment Preview ({collectPaidInMonth})
+                      </span>
+                      <span className="font-mono font-bold text-amber-300">
+                        Remaining Due: ₹{livePaymentPreview.remainingCombinedAfter.toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {livePaymentPreview.breakdown.map((b, i) => (
+                        <span
+                          key={`${b.label}-${i}`}
+                          className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
+                            b.type === 'prev-year'
+                              ? 'bg-rose-500/25 text-rose-200 border border-rose-400/40'
+                              : b.type === 'back-due'
+                              ? 'bg-amber-500/25 text-amber-200 border border-amber-400/40'
+                              : b.type === 'current-month'
+                              ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/40'
+                              : 'bg-sky-500/30 text-sky-200 border border-sky-400/50'
+                          }`}
+                        >
+                          {b.label}: ₹{b.amount}
+                        </span>
+                      ))}
+                    </div>
+
+                    {livePaymentPreview.extraAdvanceToNextMonths > 0 && (
+                      <p className="text-[10px] text-sky-300 font-semibold">
+                        ✓ Previous dues cleared — remaining extra ₹
+                        {livePaymentPreview.extraAdvanceToNextMonths.toLocaleString('en-IN')} will be
+                        adjusted to the next month(s).
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full py-2.5 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  <span>
+                    Save Payment Log{' '}
+                    {Number(collectAmount) > 0
+                      ? `(₹${Number(collectAmount).toLocaleString('en-IN')} · ${collectPaidInMonth})`
+                      : ''}
+                  </span>
+                </button>
+              </form>
+
+              {/* Right 7 Cols: Payment Collection Log Box */}
+              <div className="lg:col-span-7 bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs flex flex-col justify-between space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-100 text-slate-700 mb-1">
+                      <Receipt className="w-3 h-3 text-emerald-700" />
+                      <span>Payment Collection Log Box</span>
+                    </span>
+                    <h4 className="text-sm font-extrabold text-slate-900">
+                      Date & Month-Wise Payment Log ({(activeStudent.feePayments || []).length})
+                    </h4>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs font-mono">
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold">
+                      Total Paid: ₹
+                      {(
+                        activeFinancials.currentSessionPaid + activeFinancials.prevYearCleared
+                      ).toLocaleString('en-IN')}
+                    </span>
+                    {onOpenPdfExport && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenPdfExport({
+                            type: 'student-ledger',
+                            studentId: activeStudent.id
+                          })
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-sans font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <Printer className="w-3 h-3 text-amber-300" />
+                        <span>Print Log</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {(activeStudent.feePayments || []).length === 0 ? (
+                  <div className="py-10 text-center rounded-xl bg-slate-50 border border-dashed border-slate-300">
+                    <p className="text-xs font-bold text-slate-700">
+                      No payment collection entries logged yet for {activeStudent.studentName}.
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Use the Collection Form on the left to save payment date, paid month &amp; next-month adjustment.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto max-h-80 overflow-y-auto rounded-xl border border-slate-200">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead className="sticky top-0 bg-slate-100 text-slate-600 text-[10px] font-bold uppercase border-b border-slate-200 z-10">
+                        <tr>
+                          <th className="py-2 px-3">Receipt, Date & Paid Month</th>
+                          <th className="py-2 px-3">Back Dues & Next-Month Adjustment</th>
+                          <th className="py-2 px-3">Parent & Remarks</th>
+                          <th className="py-2 px-3">Mode</th>
+                          <th className="py-2 px-3 text-right">Collected</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200/70">
+                        {(activeStudent.feePayments || []).map((p) => {
+                          const paidInMo = p.paidInMonth || formatMonthYearFromDate(p.date);
+                          return (
+                            <tr
+                              key={p.id}
+                              className={
+                                p.extraAdvanceAmount && p.extraAdvanceAmount > 0
+                                  ? 'bg-sky-50/50 hover:bg-sky-50'
+                                  : p.isPartialPayment
+                                  ? 'bg-amber-50/50 hover:bg-amber-50'
+                                  : 'hover:bg-slate-50/80'
+                              }
+                            >
+                              <td className="py-2.5 px-3 whitespace-nowrap">
+                                <span className="font-mono font-bold text-emerald-800 block">
+                                  {p.receiptNo}
+                                </span>
+                                <span className="font-mono text-[10px] text-slate-600 block">
+                                  Date: <strong>{p.date}</strong>
+                                </span>
+                                <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded bg-slate-900 text-white text-[10px] font-semibold">
+                                  Paid in: {paidInMo}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 max-w-[240px]">
+                                <span className="font-bold text-slate-900 block">
+                                  {p.monthLabel}
+                                </span>
+                                <div className="flex flex-wrap items-center gap-1 mt-1">
+                                  {p.isPartialPayment ? (
+                                    <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-extrabold">
+                                      Partial Paid
+                                    </span>
+                                  ) : (
+                                    <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                      Settled
+                                    </span>
+                                  )}
+                                  {p.extraAdvanceAmount && p.extraAdvanceAmount > 0 ? (
+                                    <span className="px-1.5 py-0.2 rounded bg-sky-100 text-sky-900 border border-sky-300 text-[10px] font-extrabold">
+                                      +₹{p.extraAdvanceAmount} Adjusted to Next Mo.
+                                    </span>
+                                  ) : null}
+                                  {p.isPreviousYearClearance && (
+                                    <span className="px-1.5 py-0.2 rounded bg-rose-100 text-rose-800 text-[10px] font-bold">
+                                      Prev. Year
+                                    </span>
+                                  )}
+                                </div>
+                                {p.adjustmentBreakdown && p.adjustmentBreakdown.length > 0 && (
+                                  <div className="flex flex-wrap gap-1 mt-1">
+                                    {p.adjustmentBreakdown.map((adj, idx) => (
+                                      <span
+                                        key={`${p.id}-adj-${idx}`}
+                                        className={`px-1.5 py-0.2 rounded text-[9px] font-mono font-bold ${
+                                          adj.type === 'prev-year'
+                                            ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                                            : adj.type === 'back-due'
+                                            ? 'bg-amber-50 text-amber-900 border border-amber-200'
+                                            : adj.type === 'next-month-advance'
+                                            ? 'bg-sky-100 text-sky-900 border border-sky-200'
+                                            : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                        }`}
+                                      >
+                                        {adj.label}: ₹{adj.amount}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 max-w-[180px]">
+                                <span className="font-semibold text-slate-800 block truncate">
+                                  {p.paidByParentName || activeStudent.parentName}
+                                </span>
+                                <span className="text-[10px] text-slate-500 block">
+                                  {p.remarks || `Session ${p.session || '2026-27'}`}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 whitespace-nowrap">
+                                <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold text-[10px]">
+                                  {p.mode}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-extrabold text-emerald-700 whitespace-nowrap">
+                                +₹{p.amount.toLocaleString('en-IN')}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
+                  <span>
+                    Net Monthly Fee: <strong className="font-mono text-slate-900">₹{activeStudent.netMonthlyFee}/mo</strong> · FIFO clears back dues first &amp; advances extra into next month.
+                  </span>
+                  <span
+                    className={`font-mono font-extrabold ${
+                      activeFinancials.totalCombinedPending > 0
+                        ? 'text-red-700'
+                        : 'text-emerald-700'
+                    }`}
+                  >
+                    {activeFinancials.advanceCreditNextMonths > 0
+                      ? `Next-Mo. Adv. Credit: ₹${activeFinancials.advanceCreditNextMonths.toLocaleString('en-IN')}`
+                      : `Balance Due: ₹${activeFinancials.totalCombinedPending.toLocaleString('en-IN')}`}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* MONTHLY-WISE LEDGER VIEW (With Back Dues Advanced & Extra Adjusted Forward) */}
             {ledgerMode === 'monthly' && (
               <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
                 <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
@@ -1311,15 +2146,18 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                       {activeStudent.studentName}
                     </h4>
                     <p className="text-xs text-slate-500">
-                      Base Fee: ₹{activeStudent.baseMonthlyFee}/mo · Concession:{' '}
-                      {activeStudent.discountType} ({activeStudent.discountPercent}%) · Net Payable: ₹
-                      {activeStudent.netMonthlyFee}/mo
+                      Unpaid previous back dues advance into the next month&apos;s payable; extra payments after clearing dues adjust forward automatically.
                     </p>
                   </div>
-                  <div className="flex items-center gap-3 text-xs font-mono">
+                  <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
                     <span className="text-emerald-700 font-bold">
                       Session Paid: ₹{activeFinancials.currentSessionPaid}
                     </span>
+                    {activeFinancials.advanceCreditNextMonths > 0 && (
+                      <span className="font-bold px-2 py-0.5 rounded bg-sky-100 text-sky-900 border border-sky-200">
+                        Adv. Adjusted: ₹{activeFinancials.advanceCreditNextMonths}
+                      </span>
+                    )}
                     <span
                       className={`font-bold px-2 py-0.5 rounded ${
                         activeFinancials.currentSessionPending > 0
@@ -1337,84 +2175,207 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     <thead>
                       <tr className="bg-slate-100/80 text-slate-600 text-[11px] font-bold uppercase border-b border-slate-200">
                         <th className="py-2.5 px-4">Academic Month</th>
-                        <th className="py-2.5 px-3">Base Fee</th>
-                        <th className="py-2.5 px-3">Discount</th>
-                        <th className="py-2.5 px-3">Net Monthly Fee</th>
-                        <th className="py-2.5 px-3">Ledger Status</th>
-                        <th className="py-2.5 px-3">Receipt & Date</th>
+                        <th className="py-2.5 px-3">Prev. Back Due / Adv.</th>
+                        <th className="py-2.5 px-3">Month Fee</th>
+                        <th className="py-2.5 px-3">Total Payable</th>
+                        <th className="py-2.5 px-3">Paid & Date / Month</th>
+                        <th className="py-2.5 px-3">Status & Carried Forward</th>
                         <th className="py-2.5 px-4 text-right">Quick Collect</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200/60 text-xs">
-                      {monthlyLedgerRows.map((row) => (
-                        <tr
-                          key={row.key}
-                          className={
-                            row.status === 'Pending'
-                              ? 'bg-red-50/70 hover:bg-red-100/60'
-                              : 'hover:bg-slate-50/80'
-                          }
-                        >
-                          <td className="py-2.5 px-4 font-bold text-slate-900">
-                            {row.label}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-slate-600">
-                            ₹{row.baseFee}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-emerald-700">
-                            {row.discountPercent}%
-                          </td>
-                          <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
-                            ₹{row.netPayable}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            {row.status === 'Paid' && (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[11px]">
-                                <CheckCircle2 className="w-3 h-3" />
-                                Paid
-                              </span>
-                            )}
-                            {row.status === 'Pending' && (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200 font-bold text-[11px]">
-                                <AlertTriangle className="w-3 h-3" />
-                                Pending / Due
-                              </span>
-                            )}
-                            {row.status === 'Waived' && (
-                              <span className="inline-block px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-bold text-[11px]">
-                                100% Charity Waived
-                              </span>
-                            )}
-                            {row.status === 'Before Admission' && (
-                              <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-400 font-semibold text-[11px]">
-                                Prior to Admission
-                              </span>
-                            )}
-                            {row.status === 'Disenrolled Break' && (
-                              <span className="inline-block px-2 py-0.5 rounded bg-rose-50 text-rose-700 font-semibold text-[11px]">
-                                Disenrolled Break
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-[11px] text-slate-600">
-                            {row.receiptNo} ({row.receiptDate})
-                          </td>
-                          <td className="py-2.5 px-4 text-right">
-                            {row.status === 'Pending' && row.netPayable > 0 ? (
-                              <button
-                                type="button"
-                                onClick={() => handleQuickPayMonth(row.label, row.netPayable)}
-                                className="px-2.5 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <PlusCircle className="w-3 h-3" />
-                                <span>Pay ₹{row.netPayable}</span>
-                              </button>
-                            ) : (
-                              <span className="text-[11px] text-slate-400">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                      {monthlyLedgerRows.map((row) => {
+                        const inactive =
+                          row.status === 'Before Admission' ||
+                          row.status === 'Disenrolled Break';
+                        return (
+                          <tr
+                            key={row.key}
+                            className={
+                              row.status === 'Partially Paid'
+                                ? 'bg-amber-50/70 hover:bg-amber-100/60'
+                                : row.status === 'Pending' && row.key <= '2026-11'
+                                ? 'bg-red-50/70 hover:bg-red-100/60'
+                                : row.isAdvanceAdjusted
+                                ? 'bg-sky-50/50 hover:bg-sky-50'
+                                : 'hover:bg-slate-50/80'
+                            }
+                          >
+                            <td className="py-2.5 px-4 font-bold text-slate-900">
+                              {row.label}
+                              {row.key === '2026-12' && (
+                                <span className="block text-[10px] font-normal text-slate-500">
+                                  Next Billing Month
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-2.5 px-3 font-mono">
+                              {inactive || row.status === 'Waived' ? (
+                                <span className="text-slate-400">—</span>
+                              ) : row.backDueCarriedIn > 0 ? (
+                                <span className="inline-block px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200 font-extrabold text-[11px]">
+                                  +₹{row.backDueCarriedIn} Back Due
+                                </span>
+                              ) : row.advanceCreditIn > 0 ? (
+                                <span className="inline-block px-2 py-0.5 rounded bg-sky-100 text-sky-900 border border-sky-200 font-extrabold text-[11px]">
+                                  -₹{row.advanceCreditIn} Adv. Adjusted
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 text-[11px]">₹0</span>
+                              )}
+                            </td>
+
+                            <td className="py-2.5 px-3 font-mono">
+                              <span className="font-bold text-slate-900">₹{row.netPayable}</span>
+                              {row.discountPercent > 0 && (
+                                <span className="block text-[10px] text-emerald-700">
+                                  Base ₹{row.baseFee} (-{row.discountPercent}%)
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-2.5 px-3 font-mono font-extrabold text-slate-900">
+                              {inactive ? (
+                                <span className="text-slate-400 font-normal">—</span>
+                              ) : (
+                                <>
+                                  <span>₹{row.totalPayableWithBackDues}</span>
+                                  {row.backDueCarriedIn > 0 && (
+                                    <span className="block text-[10px] font-normal text-red-700">
+                                      (₹{row.netPayable} + ₹{row.backDueCarriedIn} back due)
+                                    </span>
+                                  )}
+                                </>
+                              )}
+                            </td>
+
+                            <td className="py-2.5 px-3">
+                              {inactive ? (
+                                <span className="text-slate-400">—</span>
+                              ) : row.paidAmount > 0 ? (
+                                <div>
+                                  <span className="font-mono font-bold text-emerald-700">
+                                    ₹{row.paidAmount} Paid
+                                  </span>
+                                  <span className="block font-mono text-[10px] text-slate-600">
+                                    {row.receiptNo} · {row.receiptDate}
+                                  </span>
+                                  <span className="block text-[10px] font-semibold text-slate-700">
+                                    {row.isAdvanceAdjusted
+                                      ? `Extra Adv. from ${row.paidInMonthDisplay}`
+                                      : row.isBackDueClearedLater
+                                      ? `Back Due Cleared in ${row.paidInMonthDisplay}`
+                                      : `Paid in: ${row.paidInMonthDisplay}`}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="font-mono text-[11px] font-bold text-red-700">
+                                  ₹0 Paid (Due: ₹{row.remainingAmount})
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-2.5 px-3">
+                              {row.status === 'Paid' && (
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-bold text-[11px] ${
+                                    row.isAdvanceAdjusted
+                                      ? 'bg-sky-100 text-sky-900 border border-sky-200'
+                                      : 'bg-emerald-100 text-emerald-800'
+                                  }`}
+                                >
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  {row.isAdvanceAdjusted ? 'Paid (Advance Adj.)' : 'Paid'}
+                                </span>
+                              )}
+                              {row.status === 'Partially Paid' && (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[11px]">
+                                    <Clock className="w-3 h-3" />
+                                    {row.isAdvanceAdjusted
+                                      ? 'Partial (Adv. Adjusted)'
+                                      : 'Partially Paid'}
+                                  </span>
+                                  {row.backDueCarriedForward > 0 && (
+                                    <span className="block font-mono text-[10px] font-bold text-red-700 mt-0.5">
+                                      Fwd to Next Mo: ₹{row.backDueCarriedForward}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {row.status === 'Pending' && (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200 font-bold text-[11px]">
+                                    <AlertTriangle className="w-3 h-3" />
+                                    {row.key <= '2026-11' ? 'Pending / Back Due' : 'Upcoming'}
+                                  </span>
+                                  {row.backDueCarriedForward > 0 && (
+                                    <span className="block font-mono text-[10px] font-bold text-red-700 mt-0.5">
+                                      Fwd to Next Mo: ₹{row.backDueCarriedForward}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {row.status === 'Waived' && (
+                                <span className="inline-block px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-bold text-[11px]">
+                                  100% Charity Waived
+                                </span>
+                              )}
+                              {row.status === 'Before Admission' && (
+                                <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-400 font-semibold text-[11px]">
+                                  Prior to Admission
+                                </span>
+                              )}
+                              {row.status === 'Disenrolled Break' && (
+                                <span className="inline-block px-2 py-0.5 rounded bg-rose-50 text-rose-700 font-semibold text-[11px]">
+                                  Disenrolled Break
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-2.5 px-4 text-right">
+                              {(row.status === 'Pending' || row.status === 'Partially Paid') &&
+                              row.remainingAmount > 0 ? (
+                                <div className="inline-flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handlePrefillPartialForMonth(row.label, row.remainingAmount)
+                                    }
+                                    className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-bold text-[11px] cursor-pointer"
+                                    title={`Collect partial amount toward ${row.label}`}
+                                  >
+                                    Partial
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleQuickPayMonth(
+                                        row.label,
+                                        row.backDueCarriedIn + row.remainingAmount
+                                      )
+                                    }
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                                    title={
+                                      row.backDueCarriedIn > 0
+                                        ? `Settle ₹${row.backDueCarriedIn} back due + ₹${row.remainingAmount} ${row.label}`
+                                        : `Pay ₹${row.remainingAmount} for ${row.label}`
+                                    }
+                                  >
+                                    <PlusCircle className="w-3 h-3" />
+                                    <span>
+                                      Pay ₹{row.backDueCarriedIn + row.remainingAmount}
+                                    </span>
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-slate-400">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1952,6 +2913,414 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* =================================================================== */}
+        {/* SUB-SECTION 4: AUTOMATED WHATSAPP & IN-APP PARENT FEE REMINDERS     */}
+        {/* =================================================================== */}
+        {dashboardSubTab === 'reminders' && (
+          <div className="space-y-5">
+            {/* Deadline Configuration & Bulk Dispatch Toolbar */}
+            <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-extrabold text-red-700 uppercase tracking-wider mb-1">
+                    <BellRing className="w-4 h-4" />
+                    <span>Automated Fee Deadline Reminder & Parent Notification Hub</span>
+                  </div>
+                  <h3 className="text-base font-extrabold text-slate-900">
+                    Remind Parents of Students Exceeding Payment Deadline ({overdueReminderTargets.length}{' '}
+                    Overdue)
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Automatically pushes In-App Fee Alerts to Student Portal accounts past deadline and prepares personalized WhatsApp parent reminders.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleBulkSendInAppReminders}
+                    disabled={overdueReminderTargets.length === 0}
+                    className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>
+                      Send In-App Alerts to All Overdue ({overdueReminderTargets.length})
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCopyBulkWhatsAppMessages}
+                    disabled={overdueReminderTargets.length === 0}
+                    className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {copiedBulkQueue ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Copied Queue!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-amber-300" />
+                        <span>Copy All WhatsApp Queue</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Deadline Rule Settings */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Active Payment Deadline Date
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={feeReminderSettings.activeDeadlineDate}
+                      onChange={(e) =>
+                        onUpdateReminderSettings({
+                          ...feeReminderSettings,
+                          activeDeadlineDate: e.target.value
+                        })
+                      }
+                      className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-900"
+                    />
+                    <span
+                      className={`px-2 py-1 rounded-md text-[10px] font-extrabold shrink-0 ${
+                        daysPastDeadline > 0
+                          ? 'bg-red-600 text-white'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}
+                    >
+                      {daysPastDeadline > 0
+                        ? `${daysPastDeadline}d Overdue`
+                        : 'Upcoming'}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Reminder Message Language
+                  </label>
+                  <select
+                    value={feeReminderSettings.defaultLanguage}
+                    onChange={(e) =>
+                      onUpdateReminderSettings({
+                        ...feeReminderSettings,
+                        defaultLanguage: e.target.value as FeeReminderLanguage
+                      })
+                    }
+                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg font-bold text-slate-800"
+                  >
+                    <option value="Bilingual">Bilingual (English + Hindi)</option>
+                    <option value="English">English Only</option>
+                    <option value="Hindi">Hindi Only (हिंदी)</option>
+                  </select>
+                </div>
+
+                <label className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-slate-200 cursor-pointer">
+                  <div>
+                    <span className="font-bold text-slate-900 block">
+                      Auto-Trigger In-App Alerts
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Automatically notifies parents past deadline
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={feeReminderSettings.autoTriggerInAppOnLoad}
+                    onChange={(e) =>
+                      onUpdateReminderSettings({
+                        ...feeReminderSettings,
+                        autoTriggerInAppOnLoad: e.target.checked
+                      })
+                    }
+                    className="w-4 h-4 text-emerald-600"
+                  />
+                </label>
+              </div>
+
+              {reminderBannerMsg && (
+                <div className="p-3 rounded-xl bg-emerald-900 text-white text-xs font-bold flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+                    <span>{reminderBannerMsg}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setReminderBannerMsg(null)}
+                    className="text-emerald-200 hover:text-white underline ml-4 cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Overdue Deadline Queue Table */}
+            <div className="bg-white rounded-2xl border border-red-200 shadow-xs overflow-hidden">
+              <div className="px-5 py-3.5 bg-red-50/80 border-b border-red-200 flex items-center justify-between">
+                <h4 className="text-sm font-extrabold text-red-950">
+                  Students Exceeding Payment Deadline ({overdueReminderTargets.length})
+                </h4>
+                <span className="text-[11px] font-mono font-bold text-red-700">
+                  Deadline: {feeReminderSettings.activeDeadlineDate}
+                </span>
+              </div>
+
+              {overdueReminderTargets.length === 0 ? (
+                <div className="p-8 text-center">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto mb-2" />
+                  <p className="text-sm font-bold text-slate-900">
+                    Zero overdue students past the payment deadline!
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    All enrolled students have cleared their billed balances.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100/80 text-slate-600 text-[11px] font-bold uppercase border-b border-slate-200">
+                        <th className="py-3 px-4">Student & Class</th>
+                        <th className="py-3 px-3">Parent / Guardian Phone</th>
+                        <th className="py-3 px-3">Deadline Status</th>
+                        <th className="py-3 px-3">Overdue Balance</th>
+                        <th className="py-3 px-3">Last Notification</th>
+                        <th className="py-3 px-4 text-right">Dispatch Reminder</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200/70">
+                      {overdueReminderTargets.map((item) => {
+                        const { student, financials, messageText, waUrl, latestReminder } = item;
+                        const isCopied = copiedReminderStudentId === student.id;
+                        return (
+                          <tr
+                            key={student.id}
+                            className="bg-red-50/40 hover:bg-red-50/90 border-l-4 border-l-red-600"
+                          >
+                            <td className="py-3.5 px-4">
+                              <span className="font-mono font-bold text-red-700 block">
+                                {student.studentIdCode}
+                              </span>
+                              <span className="font-bold text-slate-900 text-sm">
+                                {student.studentName}
+                              </span>
+                              <span className="block text-[11px] text-slate-500">
+                                {student.classLevel} · {student.batchCode}
+                              </span>
+                            </td>
+
+                            <td className="py-3.5 px-3">
+                              <span className="font-bold text-slate-900 block">
+                                {student.parentName}
+                              </span>
+                              <span className="font-mono text-[11px] text-slate-600">
+                                {student.phone}
+                              </span>
+                            </td>
+
+                            <td className="py-3.5 px-3">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-600 text-white text-[10px] font-extrabold uppercase">
+                                <Clock className="w-3 h-3" />
+                                {daysPastDeadline > 0
+                                  ? `${daysPastDeadline} Days Past Due`
+                                  : 'Deadline Due'}
+                              </span>
+                              <span className="block text-[10px] font-mono text-slate-500 mt-1">
+                                Due Date: {feeReminderSettings.activeDeadlineDate}
+                              </span>
+                            </td>
+
+                            <td className="py-3.5 px-3 font-mono">
+                              <span className="font-extrabold text-red-700 text-sm block">
+                                ₹{financials.totalCombinedPending.toLocaleString('en-IN')}
+                              </span>
+                              <span className="text-[10px] text-slate-500">
+                                Curr: ₹{financials.currentSessionPending}
+                                {financials.prevYearRemainingDue > 0
+                                  ? ` · Prev: ₹${financials.prevYearRemainingDue}`
+                                  : ''}
+                              </span>
+                            </td>
+
+                            <td className="py-3.5 px-3">
+                              {latestReminder ? (
+                                <div>
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                                      latestReminder.status === 'Acknowledged'
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : latestReminder.status === 'Automated Trigger'
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : 'bg-sky-100 text-sky-800'
+                                    }`}
+                                  >
+                                    {latestReminder.status}
+                                  </span>
+                                  <span className="block text-[10px] text-slate-500 mt-0.5">
+                                    {latestReminder.channel} · {latestReminder.sentAt}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-slate-400">
+                                  Not sent yet
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4 text-right">
+                              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                <a
+                                  href={waUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={() =>
+                                    createAndDispatchReminder(
+                                      student,
+                                      financials.totalCombinedPending,
+                                      messageText,
+                                      'WhatsApp + In-App'
+                                    )
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[11px] inline-flex items-center gap-1 shadow-2xs"
+                                >
+                                  <MessageCircle className="w-3 h-3" />
+                                  <span>WhatsApp Parent</span>
+                                </a>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    createAndDispatchReminder(
+                                      student,
+                                      financials.totalCombinedPending,
+                                      messageText,
+                                      'In-App Notification'
+                                    )
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <BellRing className="w-3 h-3" />
+                                  <span>In-App Alert</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      await navigator.clipboard.writeText(messageText);
+                                      setCopiedReminderStudentId(student.id);
+                                      setTimeout(() => setCopiedReminderStudentId(null), 2000);
+                                    } catch {
+                                      // Ignore clipboard error
+                                    }
+                                  }}
+                                  className="px-2 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                                  title="Copy Reminder Text"
+                                >
+                                  {isCopied ? (
+                                    <Check className="w-3 h-3 text-emerald-700" />
+                                  ) : (
+                                    <Copy className="w-3 h-3" />
+                                  )}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Sent Reminders & Parent Read Receipts Log */}
+            <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900">
+                    Dispatched WhatsApp & In-App Parent Notification Log ({feeReminders.length})
+                  </h4>
+                  <p className="text-xs text-slate-500">
+                    Tracks automated deadline triggers, manual WhatsApp dispatches, and parent portal acknowledgements.
+                  </p>
+                </div>
+                {feeReminders.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={onClearFeeReminders}
+                    className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear Log</span>
+                  </button>
+                )}
+              </div>
+
+              {feeReminders.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-6">
+                  No fee reminders dispatched yet.
+                </p>
+              ) : (
+                <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                  {feeReminders.map((rem) => (
+                    <div
+                      key={rem.id}
+                      className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono font-bold text-emerald-800">
+                            {rem.studentIdCode}
+                          </span>
+                          <span className="font-bold text-slate-900">
+                            {rem.studentName}
+                          </span>
+                          <span className="text-slate-500">
+                            (Parent: {rem.parentName} · {rem.parentPhone})
+                          </span>
+                          <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-800 text-[10px] font-bold">
+                            {rem.channel}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 line-clamp-2 whitespace-pre-line">
+                          {rem.messageText}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0 space-y-1">
+                        <span className="font-mono font-extrabold text-red-700 block">
+                          ₹{rem.dueAmount.toLocaleString('en-IN')} Due
+                        </span>
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-[10px] font-extrabold ${
+                            rem.status === 'Acknowledged'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : rem.status === 'Automated Trigger'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-sky-100 text-sky-800'
+                          }`}
+                        >
+                          {rem.status === 'Acknowledged'
+                            ? '✓ Parent Acknowledged'
+                            : rem.status}
+                        </span>
+                        <span className="block text-[10px] text-slate-400">{rem.sentAt}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
