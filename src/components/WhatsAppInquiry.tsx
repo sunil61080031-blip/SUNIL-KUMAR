@@ -23,8 +23,11 @@ import {
   Search,
   Trash2,
   Users,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Printer,
+  FileText
 } from 'lucide-react';
+import { PdfExportRequest } from '../utils/ledgerHelpers';
 
 interface WhatsAppInquiryProps {
   instituteConfig: InstituteConfig;
@@ -44,6 +47,7 @@ interface WhatsAppInquiryProps {
   onReEnrollStudent: (studentId: string, date: string, batchCode?: string) => void;
   onDeleteStudent?: (studentId: string) => void;
   onClearAllStudentsPreData?: () => void;
+  onOpenPdfExport?: (req: PdfExportRequest) => void;
 }
 
 type AdmissionSubTab = 'form' | 'register' | 'policy';
@@ -63,7 +67,8 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
   onDisenrollStudent,
   onReEnrollStudent,
   onDeleteStudent,
-  onClearAllStudentsPreData
+  onClearAllStudentsPreData,
+  onOpenPdfExport
 }) => {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [subTab, setSubTab] = useState<AdmissionSubTab>('form');
@@ -793,6 +798,25 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                     className="pl-8 pr-3 py-1 text-xs bg-white border border-slate-200 rounded-lg"
                   />
                 </div>
+                {onOpenPdfExport && students.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenPdfExport({
+                        type: 'register',
+                        students: filteredStudents,
+                        filterTitle:
+                          statusFilter === 'All'
+                            ? 'Enrolled Student Register'
+                            : `Student Register (${statusFilter})`
+                      })
+                    }
+                    className="px-3 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Export Register PDF</span>
+                  </button>
+                )}
                 {isAdmin && students.length > 0 && onClearAllStudentsPreData && (
                   <button
                     type="button"
@@ -899,6 +923,22 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                         </td>
                         <td className="py-2.5 px-3 text-right">
                           <div className="inline-flex items-center gap-1.5">
+                            {onOpenPdfExport && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenPdfExport({
+                                    type: 'student-ledger',
+                                    studentId: stu.id
+                                  })
+                                }
+                                className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-md text-[11px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Export Student Ledger Card PDF"
+                              >
+                                <FileText className="w-3 h-3" />
+                                <span>Ledger PDF</span>
+                              </button>
+                            )}
                             {stu.enrollmentStatus === 'Disenrolled' ? (
                               <button
                                 type="button"

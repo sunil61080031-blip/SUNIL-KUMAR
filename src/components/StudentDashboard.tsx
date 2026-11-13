@@ -15,6 +15,7 @@ import {
   ArrowUpRight,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Search,
   FileSpreadsheet,
   TrendingUp,
@@ -24,8 +25,19 @@ import {
   RotateCcw,
   PlusCircle,
   Sparkles,
-  Filter
+  Filter,
+  Printer,
+  FileText
 } from 'lucide-react';
+import {
+  PdfExportRequest,
+  ALL_CLASSES,
+  getWingForClass,
+  computeStudentFinancials as computeFinancialsWithPlans,
+  buildMonthlyLedgerRows
+} from '../utils/ledgerHelpers';
+
+export { getWingForClass };
 
 interface StudentDashboardProps {
   students: StudentRecord[];
@@ -59,43 +71,7 @@ interface StudentDashboardProps {
   ) => number;
   onDisenrollStudent: (studentId: string, date: string, reason?: string) => void;
   onReEnrollStudent: (studentId: string, date: string, batchCode?: string) => void;
-}
-
-const SESSION_MONTHS = [
-  { key: '2026-06', label: 'June 2026', short: 'Jun 26' },
-  { key: '2026-07', label: 'July 2026', short: 'Jul 26' },
-  { key: '2026-08', label: 'August 2026', short: 'Aug 26' },
-  { key: '2026-09', label: 'September 2026', short: 'Sep 26' },
-  { key: '2026-10', label: 'October 2026', short: 'Oct 26' },
-  { key: '2026-11', label: 'November 2026', short: 'Nov 26' },
-  { key: '2026-12', label: 'December 2026', short: 'Dec 26' },
-  { key: '2027-01', label: 'January 2027', short: 'Jan 27' },
-  { key: '2027-02', label: 'February 2027', short: 'Feb 27' },
-  { key: '2027-03', label: 'March 2027', short: 'Mar 27' },
-  { key: '2027-04', label: 'April 2027', short: 'Apr 27' },
-  { key: '2027-05', label: 'May 2027', short: 'May 27' }
-];
-
-const ALL_CLASSES = [
-  { classNum: 0, shortLabel: 'Nursery / UKG', fullLabel: 'Nursery, LKG & UKG', wing: 'Primary Class' as AcademicWing },
-  { classNum: 1, shortLabel: 'Class 1st', fullLabel: 'Class 1st (Primary Batch)', wing: 'Primary Class' as AcademicWing },
-  { classNum: 2, shortLabel: 'Class 2nd', fullLabel: 'Class 2nd (Primary Batch)', wing: 'Primary Class' as AcademicWing },
-  { classNum: 3, shortLabel: 'Class 3rd', fullLabel: 'Class 3rd (Primary Batch)', wing: 'Primary Class' as AcademicWing },
-  { classNum: 4, shortLabel: 'Class 4th', fullLabel: 'Class 4th (Primary Batch)', wing: 'Primary Class' as AcademicWing },
-  { classNum: 5, shortLabel: 'Class 5th', fullLabel: 'Class 5th (Primary Batch)', wing: 'Primary Class' as AcademicWing },
-  { classNum: 6, shortLabel: 'Class 6th', fullLabel: 'Class 6th (Middle School Batch)', wing: 'Secondary Class' as AcademicWing },
-  { classNum: 7, shortLabel: 'Class 7th', fullLabel: 'Class 7th (Middle School Batch)', wing: 'Secondary Class' as AcademicWing },
-  { classNum: 8, shortLabel: 'Class 8th', fullLabel: 'Class 8th (Middle School Batch)', wing: 'Secondary Class' as AcademicWing },
-  { classNum: 9, shortLabel: 'Class 9th', fullLabel: 'Class 9th (High School Foundation)', wing: 'Secondary Class' as AcademicWing },
-  { classNum: 10, shortLabel: 'Class 10th', fullLabel: 'Class 10th (Matric Target)', wing: 'Secondary Class' as AcademicWing },
-  { classNum: 11, shortLabel: 'Class 11th', fullLabel: 'Class 11th (I.Sc / I.A Foundation)', wing: 'High Class' as AcademicWing },
-  { classNum: 12, shortLabel: 'Class 12th', fullLabel: 'Class 12th (Intermediate Board)', wing: 'High Class' as AcademicWing }
-];
-
-export function getWingForClass(classNum: number): Exclude<AcademicWing, 'All'> {
-  if (classNum <= 5) return 'Primary Class';
-  if (classNum <= 10) return 'Secondary Class';
-  return 'High Class';
+  onOpenPdfExport?: (req: PdfExportRequest) => void;
 }
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({
@@ -107,7 +83,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onPromoteStudent,
   onBulkPromoteClass,
   onDisenrollStudent,
-  onReEnrollStudent
+  onReEnrollStudent,
+  onOpenPdfExport
 }) => {
   // 1. Wing Filter (All / Primary Class / Secondary Class / High Class)
   const [selectedWing, setSelectedWing] = useState<AcademicWing>('All');
@@ -116,6 +93,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   // 3. Session Filter & Search
   const [selectedSession, setSelectedSession] = useState<string>('All');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Enrolled' | 'Re-enrolled' | 'Disenrolled'>('All');
+  const [feeStatusFilter, setFeeStatusFilter] = useState<'All' | 'Overdue' | 'Cleared'>('All');
   const [searchQuery, setSearchQuery] = useState('');
 
   // 4. Internal Sub-Section Tabs to minimize scrolling
@@ -154,58 +132,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   );
 
   // Helper to compute fee metrics for any student
-  const computeStudentFinancials = (stu: StudentRecord) => {
-    const plan = feePlans.find((fp) => fp.classNum === stu.classNum);
-    const regFee = stu.isCharitySeat ? 0 : plan ? plan.registrationFee : 200;
-
-    // Calculate active billed months in current session (up to Nov 2026 = index 5)
-    const enrollMonthKey = (stu.enrollmentDate || '2026-07-01').slice(0, 7);
-    const currentMonthKey = '2026-11';
-    const activeMonthsElapsed = SESSION_MONTHS.filter(
-      (m) => m.key >= enrollMonthKey && m.key <= currentMonthKey
-    ).length;
-
-    const billedMonthsCount = Math.max(1, activeMonthsElapsed);
-    const currentSessionBilled = stu.isCharitySeat
-      ? 0
-      : regFee + stu.netMonthlyFee * billedMonthsCount;
-
-    const fullYearSessionFee = stu.isCharitySeat
-      ? 0
-      : regFee + stu.netMonthlyFee * 10;
-
-    // Separate payments for current session vs previous year clearance
-    const prevYearClearedFromReceipts = (stu.feePayments || [])
-      .filter((p) => p.isPreviousYearClearance || p.session === '2025-26')
-      .reduce((acc, p) => acc + p.amount, 0);
-
-    const prevYearTotalAssigned = stu.previousYearPendingFee || 0;
-    const prevYearCleared = Math.max(
-      stu.previousYearClearedAmount || 0,
-      prevYearClearedFromReceipts
-    );
-    const prevYearRemainingDue = Math.max(0, prevYearTotalAssigned - prevYearCleared);
-
-    const currentSessionPaid = stu.paidAmount || 0;
-    const currentSessionPending = Math.max(0, currentSessionBilled - currentSessionPaid);
-    const fullSessionRemaining = Math.max(0, fullYearSessionFee - currentSessionPaid);
-
-    const totalCombinedPending = currentSessionPending + prevYearRemainingDue;
-
-    return {
-      regFee,
-      billedMonthsCount,
-      currentSessionBilled,
-      fullYearSessionFee,
-      currentSessionPaid,
-      currentSessionPending,
-      fullSessionRemaining,
-      prevYearTotalAssigned,
-      prevYearCleared,
-      prevYearRemainingDue,
-      totalCombinedPending
-    };
-  };
+  const computeStudentFinancials = (stu: StudentRecord) =>
+    computeFinancialsWithPlans(stu, feePlans);
 
   // Wing Switching Handler
   const handleSelectWing = (wing: AcademicWing) => {
@@ -224,8 +152,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     return ALL_CLASSES.filter((c) => c.wing === selectedWing);
   }, [selectedWing]);
 
-  // Filtered students list
-  const filteredStudents = useMemo(() => {
+  // Base filtered students (Wing, Class, Session, Enrollment Status, Search)
+  const baseFilteredStudents = useMemo(() => {
     return students.filter((stu) => {
       const stuWing = getWingForClass(stu.classNum);
       if (selectedWing !== 'All' && stuWing !== selectedWing) return false;
@@ -257,17 +185,46 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     searchQuery
   ]);
 
-  // Aggregate summary metrics for the currently filtered Wing / Class
+  // Overdue summary within current Wing/Class/Session scope (independent of feeStatusFilter)
+  const scopeFeeOverview = useMemo(() => {
+    return baseFilteredStudents.reduce(
+      (acc, stu) => {
+        const fin = computeFinancialsWithPlans(stu, feePlans);
+        if (fin.totalCombinedPending > 0) {
+          acc.overdueCount += 1;
+          acc.overdueAmount += fin.totalCombinedPending;
+        } else {
+          acc.clearedCount += 1;
+        }
+        return acc;
+      },
+      { overdueCount: 0, clearedCount: 0, overdueAmount: 0 }
+    );
+  }, [baseFilteredStudents, feePlans]);
+
+  // Final filtered students list applying Fee Status filter
+  const filteredStudents = useMemo(() => {
+    if (feeStatusFilter === 'All') return baseFilteredStudents;
+    return baseFilteredStudents.filter((stu) => {
+      const fin = computeFinancialsWithPlans(stu, feePlans);
+      if (feeStatusFilter === 'Overdue') return fin.totalCombinedPending > 0;
+      return fin.totalCombinedPending === 0;
+    });
+  }, [baseFilteredStudents, feeStatusFilter, feePlans]);
+
+  // Aggregate summary metrics for the currently filtered Wing / Class / Fee Status
   const summaryStats = useMemo(() => {
     return filteredStudents.reduce(
       (acc, stu) => {
-        const fin = computeStudentFinancials(stu);
+        const fin = computeFinancialsWithPlans(stu, feePlans);
         acc.studentCount += 1;
         acc.currentPaid += fin.currentSessionPaid;
         acc.currentPending += fin.currentSessionPending;
         acc.prevYearPending += fin.prevYearRemainingDue;
         acc.prevYearCleared += fin.prevYearCleared;
         acc.totalCombinedDue += fin.totalCombinedPending;
+        if (fin.totalCombinedPending > 0) acc.overdueCount += 1;
+        else acc.clearedCount += 1;
         if (stu.enrollmentStatus === 'Disenrolled') acc.disenrolledCount += 1;
         if (stu.promotedFromClass) acc.promotedCount += 1;
         return acc;
@@ -279,6 +236,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         prevYearPending: 0,
         prevYearCleared: 0,
         totalCombinedDue: 0,
+        overdueCount: 0,
+        clearedCount: 0,
         disenrolledCount: 0,
         promotedCount: 0
       }
@@ -302,69 +261,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   // Build Monthly-Wise Ledger rows for activeStudent
   const monthlyLedgerRows = useMemo(() => {
-    if (!activeStudent || !activeFinancials) return [];
-    const enrollMonthKey = (activeStudent.enrollmentDate || '2026-07-01').slice(0, 7);
-    const disenrollMonthKey = activeStudent.disenrollmentDate
-      ? activeStudent.disenrollmentDate.slice(0, 7)
-      : null;
-    const reEnrollMonthKey = activeStudent.reEnrollmentDate
-      ? activeStudent.reEnrollmentDate.slice(0, 7)
-      : null;
-
-    // Track how much of currentSessionPaid remains after covering Registration Fee
-    let remainingPool = Math.max(0, activeFinancials.currentSessionPaid - activeFinancials.regFee);
-
-    return SESSION_MONTHS.map((m) => {
-      const isBeforeAdmission = m.key < enrollMonthKey;
-      const isDuringDisenrolledBreak =
-        disenrollMonthKey !== null &&
-        m.key > disenrollMonthKey &&
-        (reEnrollMonthKey === null || m.key < reEnrollMonthKey);
-
-      // Check if an explicit receipt mentions this month name
-      const matchingReceipt = (activeStudent.feePayments || []).find(
-        (p) =>
-          !p.isPreviousYearClearance &&
-          p.monthLabel.toLowerCase().includes(m.label.split(' ')[0].toLowerCase())
-      );
-
-      let status: 'Paid' | 'Pending' | 'Waived' | 'Before Admission' | 'Disenrolled Break' =
-        'Pending';
-      let paidForMonth = 0;
-
-      if (isBeforeAdmission) {
-        status = 'Before Admission';
-      } else if (isDuringDisenrolledBreak) {
-        status = 'Disenrolled Break';
-      } else if (activeStudent.isCharitySeat || activeStudent.netMonthlyFee === 0) {
-        status = 'Waived';
-      } else if (matchingReceipt) {
-        status = 'Paid';
-        paidForMonth = activeStudent.netMonthlyFee;
-        remainingPool = Math.max(0, remainingPool - activeStudent.netMonthlyFee);
-      } else if (remainingPool >= activeStudent.netMonthlyFee && activeStudent.netMonthlyFee > 0) {
-        status = 'Paid';
-        paidForMonth = activeStudent.netMonthlyFee;
-        remainingPool -= activeStudent.netMonthlyFee;
-      } else {
-        status = 'Pending';
-      }
-
-      return {
-        ...m,
-        baseFee: activeStudent.baseMonthlyFee,
-        discountPercent: activeStudent.discountPercent,
-        netPayable:
-          status === 'Before Admission' || status === 'Disenrolled Break'
-            ? 0
-            : activeStudent.netMonthlyFee,
-        paidAmount: paidForMonth,
-        status,
-        receiptNo: matchingReceipt?.receiptNo || (status === 'Paid' ? 'LEDGER-ADJ' : '—'),
-        receiptDate: matchingReceipt?.date || (status === 'Paid' ? activeStudent.enrollmentDate : '—')
-      };
-    });
-  }, [activeStudent, activeFinancials]);
+    if (!activeStudent) return [];
+    return buildMonthlyLedgerRows(activeStudent, feePlans);
+  }, [activeStudent, feePlans]);
 
   // Quick 1-click Pay Month handler
   const handleQuickPayMonth = (monthLabel: string, amount: number) => {
@@ -506,8 +405,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 ] as { id: AcademicWing; label: string; sub: string }[]
               ).map((wing) => {
                 const active = selectedWing === wing.id;
-                const wingCount = students.filter((s) =>
+                const wingStudents = students.filter((s) =>
                   wing.id === 'All' ? true : getWingForClass(s.classNum) === wing.id
+                );
+                const wingCount = wingStudents.length;
+                const wingOverdueCount = wingStudents.filter(
+                  (s) => computeStudentFinancials(s).totalCombinedPending > 0
                 ).length;
                 return (
                   <button
@@ -531,6 +434,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                       >
                         {wingCount}
                       </span>
+                      {wingOverdueCount > 0 && (
+                        <span
+                          title={`${wingOverdueCount} student(s) with overdue payments`}
+                          className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-red-600 text-white"
+                        >
+                          {wingOverdueCount} due
+                        </span>
+                      )}
                     </div>
                     <p
                       className={`text-[10px] ${
@@ -583,8 +494,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </button>
 
               {visibleClasses.map((cls) => {
-                const countInClass = students.filter(
+                const classStudents = students.filter(
                   (s) => s.classNum === cls.classNum
+                );
+                const countInClass = classStudents.length;
+                const overdueInClass = classStudents.filter(
+                  (s) => computeStudentFinancials(s).totalCombinedPending > 0
                 ).length;
                 const isSelected = selectedClassNum === cls.classNum;
                 return (
@@ -595,10 +510,17 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer ${
                       isSelected
                         ? 'bg-amber-400 text-slate-950 shadow-xs'
+                        : overdueInClass > 0
+                        ? 'bg-slate-800 text-white hover:bg-slate-700 border border-red-500/80'
                         : countInClass > 0
                         ? 'bg-slate-800 text-white hover:bg-slate-700 border border-slate-700'
                         : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800 border border-slate-800/80'
                     }`}
+                    title={
+                      overdueInClass > 0
+                        ? `${overdueInClass} student(s) overdue in ${cls.shortLabel}`
+                        : `${countInClass} student(s) in ${cls.shortLabel}`
+                    }
                   >
                     <span>{cls.shortLabel}</span>
                     <span
@@ -612,6 +534,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     >
                       {countInClass}
                     </span>
+                    {overdueInClass > 0 && (
+                      <span
+                        className="w-2 h-2 rounded-full bg-red-500 ring-2 ring-red-900/60"
+                        aria-label={`${overdueInClass} overdue`}
+                      />
+                    )}
                   </button>
                 );
               })}
@@ -620,7 +548,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         </div>
 
         {/* 5 KPI Summary Cards for Selected Wing & Class */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
           <div className="bg-white rounded-xl p-3.5 border border-slate-200/90 shadow-2xs">
             <p className="text-[11px] font-bold uppercase text-slate-400">
               Filtered Students
@@ -645,11 +573,23 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </p>
           </div>
 
-          <div className="bg-white rounded-xl p-3.5 border border-amber-200 shadow-2xs">
-            <p className="text-[11px] font-bold uppercase text-amber-700">
+          <div
+            className={`bg-white rounded-xl p-3.5 shadow-2xs border ${
+              summaryStats.currentPending > 0 ? 'border-red-300 bg-red-50/40' : 'border-emerald-200'
+            }`}
+          >
+            <p
+              className={`text-[11px] font-bold uppercase ${
+                summaryStats.currentPending > 0 ? 'text-red-700' : 'text-emerald-700'
+              }`}
+            >
               Current Session Pending
             </p>
-            <p className="text-xl font-black text-amber-700 font-mono mt-0.5">
+            <p
+              className={`text-xl font-black font-mono mt-0.5 ${
+                summaryStats.currentPending > 0 ? 'text-red-700' : 'text-emerald-700'
+              }`}
+            >
               ₹{summaryStats.currentPending.toLocaleString('en-IN')}
             </p>
             <p className="text-[11px] text-slate-500 mt-0.5">
@@ -657,11 +597,23 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </p>
           </div>
 
-          <div className="bg-white rounded-xl p-3.5 border border-rose-200 shadow-2xs">
-            <p className="text-[11px] font-bold uppercase text-rose-700">
+          <div
+            className={`bg-white rounded-xl p-3.5 shadow-2xs border ${
+              summaryStats.prevYearPending > 0 ? 'border-red-300 bg-red-50/40' : 'border-slate-200'
+            }`}
+          >
+            <p
+              className={`text-[11px] font-bold uppercase ${
+                summaryStats.prevYearPending > 0 ? 'text-red-700' : 'text-slate-500'
+              }`}
+            >
               Prev. Year Pending (2025-26)
             </p>
-            <p className="text-xl font-black text-rose-700 font-mono mt-0.5">
+            <p
+              className={`text-xl font-black font-mono mt-0.5 ${
+                summaryStats.prevYearPending > 0 ? 'text-red-700' : 'text-slate-700'
+              }`}
+            >
               ₹{summaryStats.prevYearPending.toLocaleString('en-IN')}
             </p>
             <p className="text-[11px] text-emerald-700 font-semibold mt-0.5">
@@ -669,18 +621,86 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </p>
           </div>
 
-          <div className="bg-slate-900 text-white rounded-xl p-3.5 border border-slate-800 shadow-2xs col-span-2 sm:col-span-1">
-            <p className="text-[11px] font-bold uppercase text-amber-300">
-              Total Combined Dues
-            </p>
+          <div
+            className={`rounded-xl p-3.5 border shadow-2xs col-span-2 sm:col-span-1 text-white ${
+              summaryStats.totalCombinedDue > 0
+                ? 'bg-gradient-to-br from-red-700 to-rose-800 border-red-500'
+                : 'bg-emerald-900 border-emerald-700'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-1">
+              <p className="text-[11px] font-bold uppercase text-red-100">
+                {summaryStats.totalCombinedDue > 0 ? 'Overdue Collections' : 'Collections Status'}
+              </p>
+              {summaryStats.totalCombinedDue > 0 ? (
+                <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+              )}
+            </div>
             <p className="text-xl font-black text-white font-mono mt-0.5">
               ₹{summaryStats.totalCombinedDue.toLocaleString('en-IN')}
             </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              Current + Previous Year Arrears
+            <p className="text-[11px] text-red-100/90 mt-0.5 font-semibold">
+              {summaryStats.totalCombinedDue > 0
+                ? `${summaryStats.overdueCount} student(s) overdue`
+                : 'All accounts cleared'}
             </p>
           </div>
         </div>
+
+        {/* Visual Pending Collections Alert Strip */}
+        {scopeFeeOverview.overdueCount > 0 ? (
+          <div className="mb-4 rounded-xl bg-red-50 border border-red-300 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-2.5">
+              <span className="w-8 h-8 rounded-lg bg-red-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                <AlertTriangle className="w-4 h-4" />
+              </span>
+              <div>
+                <p className="text-xs font-extrabold text-red-900">
+                  Pending Collections Alert: {scopeFeeOverview.overdueCount} student(s) have overdue fee balances (₹
+                  {scopeFeeOverview.overdueAmount.toLocaleString('en-IN')} total due)
+                </p>
+                <p className="text-[11px] text-red-700">
+                  Overdue rows are highlighted in red below for quick follow-up and collection.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setFeeStatusFilter(feeStatusFilter === 'Overdue' ? 'All' : 'Overdue')
+                }
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                  feeStatusFilter === 'Overdue'
+                    ? 'bg-red-700 text-white shadow-2xs'
+                    : 'bg-white text-red-700 border border-red-300 hover:bg-red-100'
+                }`}
+              >
+                {feeStatusFilter === 'Overdue'
+                  ? `Showing Overdue Only (${scopeFeeOverview.overdueCount})`
+                  : `Show Overdue Only (${scopeFeeOverview.overdueCount})`}
+              </button>
+              {feeStatusFilter !== 'All' && (
+                <button
+                  type="button"
+                  onClick={() => setFeeStatusFilter('All')}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-700 border border-slate-300 hover:bg-slate-100 cursor-pointer"
+                >
+                  Show All ({baseFilteredStudents.length})
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mb-4 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2.5 flex items-center gap-2.5">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+            <p className="text-xs font-bold text-emerald-900">
+              All {baseFilteredStudents.length} student(s) in this selection have cleared their billed fee balances.
+            </p>
+          </div>
+        )}
 
         {/* Sub-Section Navigation Bar (Minimizes vertical scrolling) */}
         <div className="bg-white rounded-xl p-2 border border-slate-200/90 shadow-xs mb-5 flex flex-wrap items-center justify-between gap-2">
@@ -739,6 +759,22 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </div>
 
             <select
+              value={feeStatusFilter}
+              onChange={(e) => setFeeStatusFilter(e.target.value as 'All' | 'Overdue' | 'Cleared')}
+              className={`px-2.5 py-1.5 border rounded-lg text-xs font-bold ${
+                feeStatusFilter === 'Overdue'
+                  ? 'bg-red-50 border-red-300 text-red-800'
+                  : feeStatusFilter === 'Cleared'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+              }`}
+            >
+              <option value="All">All Fee Status ({baseFilteredStudents.length})</option>
+              <option value="Overdue">Overdue Only ({scopeFeeOverview.overdueCount})</option>
+              <option value="Cleared">Cleared / No Due ({scopeFeeOverview.clearedCount})</option>
+            </select>
+
+            <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as any)}
               className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700"
@@ -779,9 +815,31 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   Previous Academic Year Pending Fee, and Class Promotion status.
                 </p>
               </div>
-              <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md">
-                Showing {filteredStudents.length} Student(s)
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md">
+                  Showing {filteredStudents.length} Student(s)
+                </span>
+                {onOpenPdfExport && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenPdfExport({
+                        type: 'register',
+                        students: filteredStudents,
+                        filterTitle: `${selectedWing} — ${
+                          selectedClassNum === 'all'
+                            ? 'All Classes'
+                            : ALL_CLASSES.find((c) => c.classNum === selectedClassNum)?.shortLabel
+                        }`
+                      })
+                    }
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Export Register PDF</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {filteredStudents.length === 0 ? (
@@ -800,6 +858,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   <thead>
                     <tr className="bg-slate-100/80 text-slate-600 text-[11px] font-bold uppercase border-b border-slate-200">
                       <th className="py-3 px-4">Student & ID</th>
+                      <th className="py-3 px-3">Fee Status</th>
                       <th className="py-3 px-3">Wing & Class</th>
                       <th className="py-3 px-3">Admission / Disenrollment Dates</th>
                       <th className="py-3 px-3">Session Fees Paid</th>
@@ -813,21 +872,64 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     {filteredStudents.map((stu) => {
                       const fin = computeStudentFinancials(stu);
                       const wing = getWingForClass(stu.classNum);
+                      const isOverdue = fin.totalCombinedPending > 0;
                       return (
                         <tr
                           key={stu.id}
-                          className="hover:bg-slate-50/90 transition-colors"
+                          className={`transition-colors border-l-4 ${
+                            isOverdue
+                              ? 'bg-red-50/85 hover:bg-red-100/80 border-l-red-600'
+                              : stu.isCharitySeat
+                              ? 'hover:bg-purple-50/40 border-l-purple-400'
+                              : 'hover:bg-slate-50/90 border-l-emerald-500'
+                          }`}
                         >
                           <td className="py-3.5 px-4">
-                            <span className="font-mono font-bold text-emerald-700 block">
-                              {stu.studentIdCode}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              {isOverdue && (
+                                <span
+                                  className="w-2 h-2 rounded-full bg-red-600 shrink-0"
+                                  title="Overdue fee payment pending"
+                                />
+                              )}
+                              <span
+                                className={`font-mono font-bold ${
+                                  isOverdue ? 'text-red-700' : 'text-emerald-700'
+                                }`}
+                              >
+                                {stu.studentIdCode}
+                              </span>
+                            </div>
                             <span className="font-bold text-slate-900 text-sm">
                               {stu.studentName}
                             </span>
                             <span className="text-[11px] text-slate-500 block">
                               G: {stu.parentName} · {stu.phone}
                             </span>
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            {isOverdue ? (
+                              <div className="space-y-1">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-600 text-white text-[10px] font-extrabold uppercase tracking-wide shadow-2xs">
+                                  <AlertTriangle className="w-3 h-3" />
+                                  Overdue
+                                </span>
+                                <span className="block font-mono font-extrabold text-red-700 text-[11px]">
+                                  ₹{fin.totalCombinedPending.toLocaleString('en-IN')} Due
+                                </span>
+                              </div>
+                            ) : stu.isCharitySeat ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 border border-purple-200 text-[10px] font-bold">
+                                <Sparkles className="w-3 h-3" />
+                                Charity Waived
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Paid / Clear
+                              </span>
+                            )}
                           </td>
 
                           <td className="py-3.5 px-3">
@@ -894,7 +996,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
                           <td className="py-3.5 px-3 font-mono">
                             {fin.currentSessionPending > 0 ? (
-                              <span className="font-bold text-amber-700 text-sm">
+                              <span className="font-extrabold text-red-700 text-sm">
                                 ₹{fin.currentSessionPending.toLocaleString('en-IN')}
                               </span>
                             ) : (
@@ -903,7 +1005,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                                 No Due
                               </span>
                             )}
-                            <span className="block text-[10px] text-slate-400">
+                            <span className="block text-[10px] text-slate-500">
                               of ₹{fin.currentSessionBilled} billed
                             </span>
                           </td>
@@ -911,7 +1013,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                           <td className="py-3.5 px-3 font-mono">
                             {fin.prevYearRemainingDue > 0 ? (
                               <div>
-                                <span className="font-bold text-rose-700 text-sm">
+                                <span className="font-extrabold text-red-700 text-sm">
                                   ₹{fin.prevYearRemainingDue.toLocaleString('en-IN')}
                                 </span>
                                 <span className="block text-[10px] text-slate-500">
@@ -955,10 +1057,30 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                               <button
                                 type="button"
                                 onClick={() => inspectStudentInTab(stu, 'ledger')}
-                                className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-[11px] border border-emerald-200 cursor-pointer"
+                                className={`px-2.5 py-1.5 rounded-lg font-bold text-[11px] cursor-pointer ${
+                                  isOverdue
+                                    ? 'bg-red-600 hover:bg-red-700 text-white shadow-2xs'
+                                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                }`}
                               >
-                                Fee Ledger
+                                {isOverdue ? 'Collect / Ledger' : 'Fee Ledger'}
                               </button>
+                              {onOpenPdfExport && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onOpenPdfExport({
+                                      type: 'student-ledger',
+                                      studentId: stu.id
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-[11px] border border-amber-200 inline-flex items-center gap-1 cursor-pointer"
+                                  title="Export Individual Student Ledger Card PDF"
+                                >
+                                  <FileText className="w-3 h-3" />
+                                  <span>Ledger PDF</span>
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => inspectStudentInTab(stu, 'promotion')}
@@ -999,48 +1121,83 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                       }}
                       className="px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
                     >
-                      {students.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.studentIdCode} — {s.studentName} ({s.classLevel})
-                        </option>
-                      ))}
+                      {students.map((s) => {
+                        const sFin = computeStudentFinancials(s);
+                        return (
+                          <option key={s.id} value={s.id}>
+                            {s.studentIdCode} — {s.studentName} ({s.classLevel})
+                            {sFin.totalCombinedPending > 0
+                              ? ` [OVERDUE ₹${sFin.totalCombinedPending}]`
+                              : ' [Paid]'}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
 
-                  <div className="flex items-center gap-2 pt-4">
+                  <div className="flex flex-wrap items-center gap-2 pt-4">
                     <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                       {getWingForClass(activeStudent.classNum)}
                     </span>
                     <span className="px-2.5 py-1 rounded-md text-xs font-mono font-bold bg-slate-100 text-slate-800">
                       Session: {activeStudent.academicSession || '2026-27'}
                     </span>
+                    {activeFinancials.totalCombinedPending > 0 ? (
+                      <span className="px-2.5 py-1 rounded-md text-xs font-extrabold bg-red-600 text-white inline-flex items-center gap-1.5 shadow-2xs">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        OVERDUE: ₹{activeFinancials.totalCombinedPending.toLocaleString('en-IN')} Due
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Fee Status: Cleared
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                {/* Toggle Monthly-Wise vs Session-Wise View */}
-                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
-                  <button
-                    type="button"
-                    onClick={() => setLedgerMode('monthly')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                      ledgerMode === 'monthly'
-                        ? 'bg-emerald-700 text-white shadow-2xs'
-                        : 'text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    Monthly-Wise Ledger (12 Months)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLedgerMode('session')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                      ledgerMode === 'session'
-                        ? 'bg-emerald-700 text-white shadow-2xs'
-                        : 'text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    Session-Wise & Prev. Year Ledger
-                  </button>
+                {/* Toggle Monthly-Wise vs Session-Wise View + Export Ledger Card PDF */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => setLedgerMode('monthly')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                        ledgerMode === 'monthly'
+                          ? 'bg-emerald-700 text-white shadow-2xs'
+                          : 'text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Monthly-Wise Ledger (12 Months)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLedgerMode('session')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                        ledgerMode === 'session'
+                          ? 'bg-emerald-700 text-white shadow-2xs'
+                          : 'text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Session-Wise & Prev. Year Ledger
+                    </button>
+                  </div>
+
+                  {onOpenPdfExport && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenPdfExport({
+                          type: 'student-ledger',
+                          studentId: activeStudent.id
+                        })
+                      }
+                      className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                    >
+                      <Printer className="w-3.5 h-3.5 text-amber-300" />
+                      <span>Export Ledger Card (PDF)</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1163,7 +1320,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     <span className="text-emerald-700 font-bold">
                       Session Paid: ₹{activeFinancials.currentSessionPaid}
                     </span>
-                    <span className="text-amber-700 font-bold">
+                    <span
+                      className={`font-bold px-2 py-0.5 rounded ${
+                        activeFinancials.currentSessionPending > 0
+                          ? 'bg-red-600 text-white'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}
+                    >
                       Current Due: ₹{activeFinancials.currentSessionPending}
                     </span>
                   </div>
@@ -1184,7 +1347,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     </thead>
                     <tbody className="divide-y divide-slate-200/60 text-xs">
                       {monthlyLedgerRows.map((row) => (
-                        <tr key={row.key} className="hover:bg-slate-50/80">
+                        <tr
+                          key={row.key}
+                          className={
+                            row.status === 'Pending'
+                              ? 'bg-red-50/70 hover:bg-red-100/60'
+                              : 'hover:bg-slate-50/80'
+                          }
+                        >
                           <td className="py-2.5 px-4 font-bold text-slate-900">
                             {row.label}
                           </td>
@@ -1205,9 +1375,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                               </span>
                             )}
                             {row.status === 'Pending' && (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold text-[11px]">
-                                <AlertCircle className="w-3 h-3" />
-                                Pending
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200 font-bold text-[11px]">
+                                <AlertTriangle className="w-3 h-3" />
+                                Pending / Due
                               </span>
                             )}
                             {row.status === 'Waived' && (

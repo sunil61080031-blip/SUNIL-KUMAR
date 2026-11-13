@@ -168,7 +168,34 @@ export interface StudentRecord {
   promotionHistory?: PromotionRecord[];
   feePayments?: FeePaymentItem[];
   attendanceRecords?: AttendanceRecord[];
+  portalPasswordHash?: string;
+  portalPasswordSalt?: string;
+  hasCustomPassword?: boolean;
   notes?: string;
+}
+
+export type AuthSecurityMode = 'password_or_otp' | 'password' | 'otp' | 'both';
+
+export interface SecurityConfig {
+  adminAuthMode: AuthSecurityMode;
+  adminPasswordHash: string;
+  adminPasswordSalt: string;
+  adminOtpPhone: string;
+  adminOtpEmail: string;
+  requireStudentAuth: boolean;
+  allowStudentPasswordLogin: boolean;
+  allowStudentOtpLogin: boolean;
+  showDemoLoginHelpers: boolean;
+  sessionTimeoutMinutes: number;
+}
+
+export interface SecurityLogItem {
+  id: string;
+  timestamp: string;
+  actor: string;
+  event: string;
+  method: 'Password' | 'OTP' | '2FA' | 'System';
+  status: 'Success' | 'Failed' | 'Reset';
 }
 
 export interface InquiryItem {

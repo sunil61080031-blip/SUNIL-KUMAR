@@ -20,25 +20,25 @@ export const PrintNoticeModal: React.FC<PrintNoticeModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs overflow-y-auto">
-      <div className="relative w-full max-w-3xl bg-white rounded-2xl shadow-2xl overflow-hidden my-8 no-print border border-slate-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs overflow-y-auto print:static print:inset-auto print:block print:bg-white print:p-0 print:overflow-visible">
+      <div className="relative w-full max-w-3xl bg-white rounded-2xl shadow-2xl overflow-hidden my-8 border border-slate-200 print:max-w-none print:my-0 print:shadow-none print:border-0 print:rounded-none">
         {/* Modal Toolbar (hidden during print) */}
-        <div className="bg-slate-900 text-white px-6 py-3.5 flex items-center justify-between">
+        <div className="bg-slate-900 text-white px-6 py-3.5 flex items-center justify-between no-print">
           <div className="flex items-center gap-2">
             <Printer className="w-5 h-5 text-amber-400" />
-            <span className="font-semibold text-sm">Official Notice Slip — Print Preview</span>
+            <span className="font-semibold text-sm">Official Notice Slip — Print / Save PDF Preview</span>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handlePrint}
-              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
             >
               <Printer className="w-4 h-4" />
-              <span>Print Slip</span>
+              <span>Print / Save PDF</span>
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg transition-colors"
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
               aria-label="Close modal"
             >
               <X className="w-5 h-5" />

@@ -15,7 +15,9 @@ export type MainSectionType =
 interface NavbarProps {
   instituteConfig: InstituteConfig;
   isAdmin: boolean;
-  onOpenAdmin: (tab?: 'branding' | 'students' | 'staff' | 'batches' | 'notices') => void;
+  onOpenAdmin: (
+    tab?: 'branding' | 'students' | 'staff' | 'batches' | 'notices' | 'security'
+  ) => void;
   onLogoutAdmin: () => void;
   noticeCount: number;
   enrolledStudentCount: number;
@@ -73,6 +75,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="text-emerald-200 hover:text-white font-bold underline cursor-pointer"
               >
                 Manage / Clear Students
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenAdmin('security')}
+                className="text-sky-200 hover:text-white font-bold underline cursor-pointer"
+              >
+                Security (Password / OTP)
               </button>
               <button
                 type="button"

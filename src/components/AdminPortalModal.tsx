@@ -9,7 +9,10 @@ import {
   BatchItem,
   BatchShift,
   FeePlan,
-  StudentRecord
+  StudentRecord,
+  SecurityConfig,
+  SecurityLogItem,
+  AuthSecurityMode
 } from '../types';
 import {
   X,
@@ -23,6 +26,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Eye,
+  EyeOff,
   Building2,
   Briefcase,
   BookOpen,
@@ -30,17 +34,49 @@ import {
   Upload,
   Save,
   RotateCcw,
-  Pencil
+  Pencil,
+  KeyRound,
+  Smartphone,
+  Mail,
+  Clock,
+  RefreshCw,
+  ShieldAlert,
+  Shield
 } from 'lucide-react';
+import {
+  DEFAULT_ADMIN_PASSWORD,
+  evaluatePasswordStrength,
+  generateSixDigitOtp,
+  maskEmail,
+  maskPhone
+} from '../utils/securityHelpers';
 
-export type AdminTabType = 'branding' | 'students' | 'staff' | 'batches' | 'notices';
+export type AdminTabType =
+  | 'branding'
+  | 'students'
+  | 'staff'
+  | 'batches'
+  | 'notices'
+  | 'security';
 
 interface AdminPortalModalProps {
   isOpen: boolean;
   onClose: () => void;
   isAdmin: boolean;
-  onLogin: (pass: string) => boolean;
+  onVerifyPassword: (pass: string) => Promise<boolean>;
+  onCompleteLogin: (method: 'Password' | 'OTP' | '2FA') => void;
   onLogout: () => void;
+  securityConfig: SecurityConfig;
+  onUpdateSecurityConfig: (config: SecurityConfig) => void;
+  onUpdateAdminPassword: (newPassword: string) => Promise<void>;
+  onSetStudentPortalPassword: (studentId: string, newPassword: string) => Promise<void>;
+  securityLogs: SecurityLogItem[];
+  onSecurityLog: (
+    actor: string,
+    event: string,
+    method: SecurityLogItem['method'],
+    status: SecurityLogItem['status']
+  ) => void;
   instituteConfig: InstituteConfig;
   onUpdateInstituteConfig: (config: InstituteConfig) => void;
   staffList: StaffMember[];
@@ -78,8 +114,15 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   isOpen,
   onClose,
   isAdmin,
-  onLogin,
+  onVerifyPassword,
+  onCompleteLogin,
   onLogout,
+  securityConfig,
+  onUpdateSecurityConfig,
+  onUpdateAdminPassword,
+  onSetStudentPortalPassword,
+  securityLogs,
+  onSecurityLog,
   instituteConfig,
   onUpdateInstituteConfig,
   staffList,
@@ -111,10 +154,75 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   initialTab = 'branding'
 }) => {
   const [passwordInput, setPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [loginSuccessNote, setLoginSuccessNote] = useState('');
+  const [authMethodTab, setAuthMethodTab] = useState<'password' | 'otp' | 'forgot'>('password');
+  const [twoFactorStage, setTwoFactorStage] = useState<'password' | 'otp'>('password');
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
+
+  // OTP state for Admin Login & Password Reset
+  const [otpChannel, setOtpChannel] = useState<'phone' | 'email'>('phone');
+  const [generatedOtp, setGeneratedOtp] = useState<string | null>(null);
+  const [otpInput, setOtpInput] = useState('');
+  const [otpExpiresIn, setOtpExpiresIn] = useState(0);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+
+  // Forgot password reset via OTP
+  const [forgotNewPass, setForgotNewPass] = useState('');
+  const [forgotConfirmPass, setForgotConfirmPass] = useState('');
+
+  // Security Settings Tab state
+  const [secCurrentPass, setSecCurrentPass] = useState('');
+  const [secNewPass, setSecNewPass] = useState('');
+  const [secConfirmPass, setSecConfirmPass] = useState('');
+  const [secPassMessage, setSecPassMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(
+    null
+  );
+  const [secForm, setSecForm] = useState<SecurityConfig>(securityConfig);
+
   const [activeTab, setActiveTab] = useState<AdminTabType>(initialTab);
   const [saveBanner, setSaveBanner] = useState('');
   const [confirmClearAllStudents, setConfirmClearAllStudents] = useState(false);
+
+  useEffect(() => {
+    setSecForm(securityConfig);
+  }, [securityConfig]);
+
+  useEffect(() => {
+    if (securityConfig.adminAuthMode === 'otp') {
+      setAuthMethodTab('otp');
+    } else if (securityConfig.adminAuthMode === 'password') {
+      setAuthMethodTab('password');
+    } else if (securityConfig.adminAuthMode === 'both') {
+      setAuthMethodTab('password');
+      setTwoFactorStage('password');
+    }
+  }, [securityConfig.adminAuthMode, isOpen]);
+
+  useEffect(() => {
+    if (lockoutSeconds <= 0) return;
+    const id = window.setInterval(() => {
+      setLockoutSeconds((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [lockoutSeconds]);
+
+  useEffect(() => {
+    if (otpExpiresIn <= 0 && otpCooldown <= 0) return;
+    const id = window.setInterval(() => {
+      setOtpExpiresIn((prev) => {
+        if (prev <= 1) {
+          setGeneratedOtp(null);
+          return 0;
+        }
+        return prev - 1;
+      });
+      setOtpCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [otpExpiresIn, otpCooldown]);
 
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab);
@@ -233,15 +341,151 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     setTimeout(() => setSaveBanner(''), 3000);
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleSendAdminOtp = (purpose: 'login' | '2fa' | 'reset') => {
+    if (lockoutSeconds > 0) return;
+    const code = generateSixDigitOtp();
+    setGeneratedOtp(code);
+    setOtpInput('');
+    setOtpExpiresIn(120);
+    setOtpCooldown(25);
+    setLoginError('');
+    setLoginSuccessNote(
+      `6-digit OTP sent via ${otpChannel === 'phone' ? 'SMS/WhatsApp' : 'Email'} (${
+        otpChannel === 'phone'
+          ? maskPhone(securityConfig.adminOtpPhone)
+          : maskEmail(securityConfig.adminOtpEmail)
+      }) for ${purpose === 'reset' ? 'Password Reset' : 'Admin Verification'}. Valid for 2 minutes.`
+    );
+    onSecurityLog(
+      'Admin',
+      `6-Digit OTP dispatched to ${
+        otpChannel === 'phone'
+          ? maskPhone(securityConfig.adminOtpPhone)
+          : maskEmail(securityConfig.adminOtpEmail)
+      } (${purpose})`,
+      'OTP',
+      'Success'
+    );
+  };
+
+  const registerFailedAttempt = (reason: string) => {
+    const nextCount = failedAttempts + 1;
+    setFailedAttempts(nextCount);
+    if (nextCount >= 5) {
+      setLockoutSeconds(30);
+      setFailedAttempts(0);
+      setLoginError('Too many failed verification attempts. Locked for 30 seconds.');
+      onSecurityLog('Admin', 'Account temporarily locked (5 failed attempts)', 'System', 'Failed');
+    } else {
+      setLoginError(`${reason} (${5 - nextCount} attempts left before 30s lock)`);
+    }
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (lockoutSeconds > 0) return;
+    setLoginError('');
+    setLoginSuccessNote('');
+
+    const success = await onVerifyPassword(passwordInput);
+    if (!success) {
+      registerFailedAttempt('Incorrect password.');
+      return;
+    }
+
+    setFailedAttempts(0);
+    setPasswordInput('');
+
+    if (securityConfig.adminAuthMode === 'both') {
+      setTwoFactorStage('otp');
+      handleSendAdminOtp('2fa');
+      return;
+    }
+
+    onCompleteLogin('Password');
+  };
+
+  const handleOtpLoginSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (lockoutSeconds > 0) return;
+    setLoginError('');
+
+    if (!generatedOtp || otpExpiresIn <= 0) {
+      setLoginError('OTP has expired or not been requested yet. Please click Send 6-Digit OTP.');
+      return;
+    }
+
+    if (otpInput.trim() !== generatedOtp) {
+      onSecurityLog('Admin', 'Invalid Admin OTP code entered', 'OTP', 'Failed');
+      registerFailedAttempt('Invalid 6-digit OTP.');
+      return;
+    }
+
+    const used2FA = securityConfig.adminAuthMode === 'both';
+    setGeneratedOtp(null);
+    setOtpInput('');
+    setOtpExpiresIn(0);
+    setFailedAttempts(0);
+    setTwoFactorStage('password');
+    onCompleteLogin(used2FA ? '2FA' : 'OTP');
+  };
+
+  const handleForgotPasswordResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
-    const success = onLogin(passwordInput);
-    if (!success) {
-      setLoginError('Invalid password. Default password is: sunil2026');
-    } else {
-      setPasswordInput('');
+    if (!generatedOtp || otpExpiresIn <= 0) {
+      setLoginError('Please request and enter a valid 6-digit OTP first.');
+      return;
     }
+    if (otpInput.trim() !== generatedOtp) {
+      onSecurityLog('Admin', 'Invalid OTP during password reset', 'OTP', 'Failed');
+      registerFailedAttempt('Invalid 6-digit OTP.');
+      return;
+    }
+    if (forgotNewPass.trim().length < 6) {
+      setLoginError('New password must be at least 6 characters.');
+      return;
+    }
+    if (forgotNewPass !== forgotConfirmPass) {
+      setLoginError('New password and confirm password do not match.');
+      return;
+    }
+
+    await onUpdateAdminPassword(forgotNewPass);
+    setGeneratedOtp(null);
+    setOtpInput('');
+    setForgotNewPass('');
+    setForgotConfirmPass('');
+    setAuthMethodTab('password');
+    setLoginSuccessNote('Admin password reset via OTP! You can now sign in with your new password.');
+  };
+
+  const handleChangeAdminPasswordInTab = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSecPassMessage(null);
+    const verified = await onVerifyPassword(secCurrentPass);
+    if (!verified) {
+      setSecPassMessage({ type: 'err', text: 'Current password is incorrect.' });
+      return;
+    }
+    if (secNewPass.trim().length < 6) {
+      setSecPassMessage({ type: 'err', text: 'New password must be at least 6 characters.' });
+      return;
+    }
+    if (secNewPass !== secConfirmPass) {
+      setSecPassMessage({ type: 'err', text: 'New password and confirmation do not match.' });
+      return;
+    }
+
+    await onUpdateAdminPassword(secNewPass);
+    setSecCurrentPass('');
+    setSecNewPass('');
+    setSecConfirmPass('');
+    setSecPassMessage({
+      type: 'ok',
+      text: 'Admin password updated securely with salted SHA-256 hash!'
+    });
+    showToast('Admin password updated!');
   };
 
   const handleImageFileUpload = (
@@ -550,58 +794,333 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
           </div>
         )}
 
-        {/* Not Logged In: Password Gate */}
+        {/* Not Logged In: Password / 6-Digit OTP / 2FA Security Gate */}
         {!isAdmin ? (
-          <div className="p-8 sm:p-12 text-center max-w-md mx-auto space-y-6 my-auto">
-            <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-700">
-              <Lock className="w-8 h-8 text-emerald-700" />
-            </div>
-
-            <div>
-              <h3 className="text-lg font-bold text-slate-900">
-                Institute Head / Admin Login
+          <div className="p-6 sm:p-10 max-w-md mx-auto space-y-5 my-auto w-full">
+            <div className="text-center space-y-2">
+              <div className="w-14 h-14 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-center mx-auto">
+                <Lock className="w-7 h-7 text-emerald-700" />
+              </div>
+              <h3 className="text-lg font-extrabold text-slate-900">
+                Institute Head / Admin Security Gate
               </h3>
-              <p className="text-xs text-slate-500 mt-1">
-                Sign in to change institute name, contact number, images, study centres, assign staff roles, edit active batch IDs, and control the 500-student register.
+              <p className="text-xs text-slate-500">
+                {securityConfig.adminAuthMode === 'both'
+                  ? 'Two-Factor Security Active: Verify Password + 6-Digit OTP to unlock.'
+                  : securityConfig.adminAuthMode === 'otp'
+                  ? 'OTP-Only Security Active: Verify via 6-Digit Mobile or Email OTP.'
+                  : securityConfig.adminAuthMode === 'password'
+                  ? 'Password Security Active: Enter Admin Password to unlock.'
+                  : 'Sign in using your Admin Password OR a 6-Digit Verification OTP.'}
               </p>
             </div>
 
+            {/* Method Switcher (Password vs 6-Digit OTP vs Forgot Reset) */}
+            {twoFactorStage === 'password' && (
+              <div className="grid grid-cols-3 gap-1.5 bg-slate-100 p-1 rounded-xl text-[11px] font-bold">
+                {securityConfig.adminAuthMode !== 'otp' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMethodTab('password');
+                      setLoginError('');
+                    }}
+                    className={`py-2 px-2 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                      authMethodTab === 'password'
+                        ? 'bg-white text-emerald-800 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>Password</span>
+                  </button>
+                )}
+                {securityConfig.adminAuthMode !== 'password' &&
+                  securityConfig.adminAuthMode !== 'both' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMethodTab('otp');
+                        setLoginError('');
+                      }}
+                      className={`py-2 px-2 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                        authMethodTab === 'otp'
+                          ? 'bg-white text-emerald-800 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5" />
+                      <span>6-Digit OTP</span>
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMethodTab('forgot');
+                    setLoginError('');
+                    setGeneratedOtp(null);
+                  }}
+                  className={`py-2 px-2 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                    authMethodTab === 'forgot'
+                      ? 'bg-white text-amber-800 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  } ${
+                    securityConfig.adminAuthMode === 'otp' ||
+                    securityConfig.adminAuthMode === 'password' ||
+                    securityConfig.adminAuthMode === 'both'
+                      ? 'col-span-2'
+                      : ''
+                  }`}
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Reset via OTP</span>
+                </button>
+              </div>
+            )}
+
+            {lockoutSeconds > 0 && (
+              <div className="p-3 bg-red-50 border border-red-300 text-red-800 text-xs font-bold rounded-xl flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0 text-red-600" />
+                <span>Security Lockout Active — Retry in {lockoutSeconds}s</span>
+              </div>
+            )}
+
             {loginError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-lg flex items-center gap-2 text-left">
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold rounded-xl flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{loginError}</span>
               </div>
             )}
 
-            <form onSubmit={handleLoginSubmit} className="space-y-3">
-              <input
-                type="password"
-                required
-                value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
-                placeholder="Enter Admin Password (sunil2026)"
-                className="w-full px-4 py-2.5 text-xs text-center font-mono bg-slate-50 border border-slate-300 rounded-xl focus:outline-hidden focus:border-emerald-600 focus:bg-white"
-              />
-              <button
-                type="submit"
-                className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl transition-colors shadow-xs"
-              >
-                Unlock Admin Suite
-              </button>
-            </form>
+            {loginSuccessNote && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-xl flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>{loginSuccessNote}</span>
+              </div>
+            )}
 
-            <div className="pt-2 border-t border-slate-100 flex flex-col gap-2">
-              <button
-                onClick={() => onLogin('sunil2026')}
-                className="px-3 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 font-bold text-xs rounded-xl transition-colors"
-              >
-                Instant 1-Click Admin Demo Login
-              </button>
-              <p className="text-[11px] text-slate-400">
-                Default Access Password:{' '}
-                <code className="font-mono font-bold text-slate-700">sunil2026</code>
-              </p>
-            </div>
+            {/* Simulated OTP Delivery Preview Toast so browser testing works 100% */}
+            {generatedOtp && otpExpiresIn > 0 && (
+              <div className="p-3 rounded-xl bg-slate-900 text-white border border-emerald-500/40 flex items-center justify-between gap-3">
+                <div className="text-left">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                    OTP Notification ({otpChannel === 'phone' ? 'SMS' : 'Email'}) · {otpExpiresIn}s
+                  </p>
+                  <p className="text-sm font-mono font-black tracking-widest text-amber-300 mt-0.5">
+                    {generatedOtp}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOtpInput(generatedOtp)}
+                  className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer shrink-0"
+                >
+                  Auto-Fill OTP
+                </button>
+              </div>
+            )}
+
+            {/* 1. PASSWORD LOGIN FORM (or 2FA Step 1) */}
+            {twoFactorStage === 'password' && authMethodTab === 'password' && (
+              <form onSubmit={handleLoginSubmit} className="space-y-3">
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    disabled={lockoutSeconds > 0}
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    placeholder="Enter Admin Password"
+                    className="w-full pl-4 pr-10 py-2.5 text-xs font-mono bg-slate-50 border border-slate-300 rounded-xl focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+                <button
+                  type="submit"
+                  disabled={lockoutSeconds > 0}
+                  className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-colors shadow-xs cursor-pointer"
+                >
+                  {securityConfig.adminAuthMode === 'both'
+                    ? 'Step 1: Verify Password & Send OTP'
+                    : 'Unlock Admin Suite'}
+                </button>
+              </form>
+            )}
+
+            {/* 2. 6-DIGIT OTP LOGIN FORM (or 2FA Step 2) */}
+            {(twoFactorStage === 'otp' || authMethodTab === 'otp') && (
+              <form onSubmit={handleOtpLoginSubmit} className="space-y-3">
+                {twoFactorStage === 'otp' && (
+                  <div className="flex items-center justify-between text-[11px] font-bold text-emerald-800 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
+                    <span>✓ Password Verified (Step 1/2)</span>
+                    <button
+                      type="button"
+                      onClick={() => setTwoFactorStage('password')}
+                      className="underline text-slate-600 cursor-pointer"
+                    >
+                      Back
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOtpChannel('phone')}
+                    className={`p-2 rounded-xl border text-left text-[11px] cursor-pointer ${
+                      otpChannel === 'phone'
+                        ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold'
+                        : 'bg-slate-50 border-slate-200 text-slate-600'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1">
+                      <Smartphone className="w-3 h-3" /> SMS / WhatsApp
+                    </span>
+                    <span className="font-mono text-[10px] block mt-0.5">
+                      {maskPhone(securityConfig.adminOtpPhone)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOtpChannel('email')}
+                    className={`p-2 rounded-xl border text-left text-[11px] cursor-pointer ${
+                      otpChannel === 'email'
+                        ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold'
+                        : 'bg-slate-50 border-slate-200 text-slate-600'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1">
+                      <Mail className="w-3 h-3" /> Email OTP
+                    </span>
+                    <span className="font-mono text-[10px] block mt-0.5 truncate">
+                      {maskEmail(securityConfig.adminOtpEmail)}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={otpInput}
+                    onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Enter 6-Digit OTP"
+                    className="flex-1 px-4 py-2.5 text-sm text-center tracking-widest font-mono font-bold bg-slate-50 border border-slate-300 rounded-xl focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                  />
+                  <button
+                    type="button"
+                    disabled={otpCooldown > 0 || lockoutSeconds > 0}
+                    onClick={() =>
+                      handleSendAdminOtp(twoFactorStage === 'otp' ? '2fa' : 'login')
+                    }
+                    className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold text-xs rounded-xl shrink-0 cursor-pointer"
+                  >
+                    {otpCooldown > 0
+                      ? `Resend (${otpCooldown}s)`
+                      : generatedOtp
+                      ? 'Resend OTP'
+                      : 'Send OTP'}
+                  </button>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={lockoutSeconds > 0}
+                  className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-colors shadow-xs cursor-pointer"
+                >
+                  {twoFactorStage === 'otp'
+                    ? 'Step 2: Verify OTP & Unlock'
+                    : 'Verify OTP & Unlock Admin'}
+                </button>
+              </form>
+            )}
+
+            {/* 3. FORGOT PASSWORD RESET VIA OTP */}
+            {authMethodTab === 'forgot' && twoFactorStage === 'password' && (
+              <form onSubmit={handleForgotPasswordResetSubmit} className="space-y-2.5 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-slate-700">
+                    Reset to: {maskPhone(securityConfig.adminOtpPhone)}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={otpCooldown > 0}
+                    onClick={() => handleSendAdminOtp('reset')}
+                    className="px-3 py-1 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg cursor-pointer"
+                  >
+                    {otpCooldown > 0 ? `Wait ${otpCooldown}s` : 'Send Reset OTP'}
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  required
+                  value={otpInput}
+                  onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Enter 6-Digit Reset OTP"
+                  className="w-full px-3 py-2 text-xs font-mono font-bold bg-slate-50 border border-slate-300 rounded-xl"
+                />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={forgotNewPass}
+                  onChange={(e) => setForgotNewPass(e.target.value)}
+                  placeholder="New Admin Password (min 6 chars)"
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl"
+                />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={forgotConfirmPass}
+                  onChange={(e) => setForgotConfirmPass(e.target.value)}
+                  placeholder="Confirm New Password"
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl"
+                />
+                <button
+                  type="submit"
+                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+                >
+                  Verify OTP & Reset Password
+                </button>
+              </form>
+            )}
+
+            {securityConfig.showDemoLoginHelpers &&
+              securityConfig.adminAuthMode !== 'both' &&
+              securityConfig.adminAuthMode !== 'otp' &&
+              authMethodTab === 'password' && (
+                <div className="pt-2 border-t border-slate-100 flex flex-col gap-1.5 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setPasswordInput(DEFAULT_ADMIN_PASSWORD)}
+                    className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                  >
+                    Fill Default Demo Password
+                  </button>
+                  <p className="text-[11px] text-slate-400">
+                    Initial Password:{' '}
+                    <code className="font-mono font-bold text-slate-700">
+                      {DEFAULT_ADMIN_PASSWORD}
+                    </code>{' '}
+                    (changeable in Tab 6: Security)
+                  </p>
+                </div>
+              )}
           </div>
         ) : (
           /* Logged In: Full 5-Tab Management Suite */
@@ -661,7 +1180,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
 
                 <button
                   onClick={() => setActiveTab('notices')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                     activeTab === 'notices'
                       ? 'bg-emerald-700 text-white shadow-xs'
                       : 'bg-white text-slate-700 hover:bg-slate-200'
@@ -669,6 +1188,18 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 >
                   <Bell className="w-3.5 h-3.5" />
                   <span>5. Notices ({notices.length})</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('security')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    activeTab === 'security'
+                      ? 'bg-slate-900 text-amber-300 shadow-xs'
+                      : 'bg-white text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>6. Security (Password & OTP)</span>
                 </button>
               </div>
 
@@ -1994,6 +2525,410 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                         </div>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 6: SECURITY SETTINGS (PASSWORD, 6-DIGIT OTP, 2FA & AUDIT LOG) */}
+              {activeTab === 'security' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Left: Admin Auth Mode & OTP Destinations */}
+                    <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                        <div>
+                          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                            <Shield className="w-4 h-4 text-emerald-700" />
+                            <span>Admin Login Policy (Password / OTP / 2FA)</span>
+                          </h3>
+                          <p className="text-[11px] text-slate-500">
+                            Choose whether Admin Suite unlocks via Password, 6-Digit OTP, or both.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {(
+                          [
+                            {
+                              id: 'password_or_otp',
+                              title: 'Password OR 6-Digit OTP (Flexible)',
+                              desc: 'Login screen allows choosing Password or OTP anytime.'
+                            },
+                            {
+                              id: 'password',
+                              title: 'Password Only',
+                              desc: 'Requires Admin Password (OTP still available for reset).'
+                            },
+                            {
+                              id: 'otp',
+                              title: '6-Digit OTP Only',
+                              desc: 'Passwordless sign-in verified via Mobile / Email OTP.'
+                            },
+                            {
+                              id: 'both',
+                              title: 'Two-Factor Auth (Password + 6-Digit OTP)',
+                              desc: 'Maximum protection: requires password followed by OTP.'
+                            }
+                          ] as { id: AuthSecurityMode; title: string; desc: string }[]
+                        ).map((opt) => (
+                          <label
+                            key={opt.id}
+                            className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors ${
+                              secForm.adminAuthMode === opt.id
+                                ? 'bg-emerald-50 border-emerald-400'
+                                : 'bg-white border-slate-200 hover:bg-slate-100/70'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="adminAuthMode"
+                              checked={secForm.adminAuthMode === opt.id}
+                              onChange={() =>
+                                setSecForm({ ...secForm, adminAuthMode: opt.id })
+                              }
+                              className="mt-0.5 text-emerald-600"
+                            />
+                            <div>
+                              <span className="text-xs font-bold text-slate-900 block">
+                                {opt.title}
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                {opt.desc}
+                              </span>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                            OTP Mobile Number
+                          </label>
+                          <input
+                            type="text"
+                            value={secForm.adminOtpPhone}
+                            onChange={(e) =>
+                              setSecForm({ ...secForm, adminOtpPhone: e.target.value })
+                            }
+                            className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                            OTP Recovery Email
+                          </label>
+                          <input
+                            type="email"
+                            value={secForm.adminOtpEmail}
+                            onChange={(e) =>
+                              setSecForm({ ...secForm, adminOtpEmail: e.target.value })
+                            }
+                            className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 pt-1">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block">
+                            Inactivity Auto-Lock Timer
+                          </label>
+                          <span className="text-[10px] text-slate-500">
+                            Automatically locks Admin Suite when idle
+                          </span>
+                        </div>
+                        <select
+                          value={secForm.sessionTimeoutMinutes}
+                          onChange={(e) =>
+                            setSecForm({
+                              ...secForm,
+                              sessionTimeoutMinutes: Number(e.target.value)
+                            })
+                          }
+                          className="px-3 py-1.5 text-xs font-bold bg-white border border-slate-300 rounded-lg"
+                        >
+                          <option value={0}>Disabled</option>
+                          <option value={15}>15 Minutes</option>
+                          <option value={30}>30 Minutes</option>
+                          <option value={60}>60 Minutes</option>
+                        </select>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUpdateSecurityConfig(secForm);
+                          onSecurityLog(
+                            'Admin',
+                            `Updated security policy (${secForm.adminAuthMode})`,
+                            'System',
+                            'Success'
+                          );
+                          showToast('Security policy & OTP contacts saved!');
+                        }}
+                        className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Save className="w-4 h-4" />
+                        <span>Save Security Policy</span>
+                      </button>
+                    </div>
+
+                    {/* Right: Change Admin Password & Student Portal Security */}
+                    <div className="space-y-6">
+                      <form
+                        onSubmit={handleChangeAdminPasswordInTab}
+                        className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-3"
+                      >
+                        <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                          <KeyRound className="w-4 h-4 text-emerald-700" />
+                          <span>Change Admin Password (SHA-256 Encrypted)</span>
+                        </h3>
+
+                        {secPassMessage && (
+                          <div
+                            className={`p-2.5 rounded-lg text-xs font-bold border ${
+                              secPassMessage.type === 'ok'
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                                : 'bg-rose-50 border-rose-200 text-rose-700'
+                            }`}
+                          >
+                            {secPassMessage.text}
+                          </div>
+                        )}
+
+                        <input
+                          type="password"
+                          required
+                          value={secCurrentPass}
+                          onChange={(e) => setSecCurrentPass(e.target.value)}
+                          placeholder="Current Admin Password"
+                          className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg font-mono"
+                        />
+
+                        <div className="space-y-1.5">
+                          <input
+                            type="password"
+                            required
+                            minLength={6}
+                            value={secNewPass}
+                            onChange={(e) => setSecNewPass(e.target.value)}
+                            placeholder="New Password (min 6 characters)"
+                            className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg font-mono"
+                          />
+                          {secNewPass && (
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full transition-all ${
+                                    evaluatePasswordStrength(secNewPass).barColor
+                                  }`}
+                                  style={{
+                                    width: `${
+                                      evaluatePasswordStrength(secNewPass).score * 25
+                                    }%`
+                                  }}
+                                />
+                              </div>
+                              <span
+                                className={`text-[10px] font-bold ${
+                                  evaluatePasswordStrength(secNewPass).textColor
+                                }`}
+                              >
+                                {evaluatePasswordStrength(secNewPass).label}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <input
+                          type="password"
+                          required
+                          minLength={6}
+                          value={secConfirmPass}
+                          onChange={(e) => setSecConfirmPass(e.target.value)}
+                          placeholder="Confirm New Password"
+                          className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg font-mono"
+                        />
+
+                        <button
+                          type="submit"
+                          className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl cursor-pointer"
+                        >
+                          Update Admin Password
+                        </button>
+                      </form>
+
+                      {/* Student Portal Access Controls */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 space-y-3">
+                        <h3 className="text-sm font-extrabold text-slate-900">
+                          Student Portal Authentication Controls
+                        </h3>
+                        <div className="space-y-2 text-xs">
+                          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                            <div>
+                              <span className="font-bold text-slate-900 block">
+                                Require Password / OTP on Student Portal
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                Locks Student Portal until student authenticates
+                              </span>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={secForm.requireStudentAuth}
+                              onChange={(e) => {
+                                const updated = {
+                                  ...secForm,
+                                  requireStudentAuth: e.target.checked
+                                };
+                                setSecForm(updated);
+                                onUpdateSecurityConfig(updated);
+                              }}
+                              className="w-4 h-4 text-emerald-600"
+                            />
+                          </label>
+
+                          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                            <div>
+                              <span className="font-bold text-slate-900 block">
+                                Allow Student 6-Digit OTP Login
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                Students can unlock via registered mobile OTP
+                              </span>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={secForm.allowStudentOtpLogin}
+                              onChange={(e) => {
+                                const updated = {
+                                  ...secForm,
+                                  allowStudentOtpLogin: e.target.checked
+                                };
+                                setSecForm(updated);
+                                onUpdateSecurityConfig(updated);
+                              }}
+                              className="w-4 h-4 text-emerald-600"
+                            />
+                          </label>
+
+                          <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                            <div>
+                              <span className="font-bold text-slate-900 block">
+                                Show Demo Test Credential Helpers
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                Turn off in production to hide demo hints & quick-fill
+                              </span>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={secForm.showDemoLoginHelpers}
+                              onChange={(e) => {
+                                const updated = {
+                                  ...secForm,
+                                  showDemoLoginHelpers: e.target.checked
+                                };
+                                setSecForm(updated);
+                                onUpdateSecurityConfig(updated);
+                              }}
+                              className="w-4 h-4 text-emerald-600"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Student Portal Password Reset Table + Recent Security Logs */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div className="bg-white p-5 rounded-2xl border border-slate-200 space-y-3">
+                      <h4 className="text-sm font-bold text-slate-900">
+                        Student Portal Password Status ({students.length})
+                      </h4>
+                      <div className="max-h-56 overflow-y-auto divide-y divide-slate-100 text-xs">
+                        {students.map((stu) => (
+                          <div
+                            key={stu.id}
+                            className="py-2.5 flex items-center justify-between gap-2"
+                          >
+                            <div>
+                              <span className="font-mono font-bold text-emerald-700">
+                                {stu.studentIdCode}
+                              </span>{' '}
+                              <span className="font-bold text-slate-900">
+                                {stu.studentName}
+                              </span>
+                              <span className="block text-[11px] text-slate-500">
+                                {stu.hasCustomPassword
+                                  ? 'Custom SHA-256 Password Set'
+                                  : `Default PIN: Last 4 digits (${stu.phone
+                                      .replace(/\D/g, '')
+                                      .slice(-4)})`}
+                              </span>
+                            </div>
+                            {stu.hasCustomPassword ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onSetStudentPortalPassword(stu.id, '');
+                                  showToast(`Reset ${stu.studentIdCode} password to default PIN.`);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-[11px] cursor-pointer"
+                              >
+                                Reset to PIN
+                              </button>
+                            ) : (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600">
+                                Mobile PIN / OTP
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-5 rounded-2xl border border-slate-200 space-y-3">
+                      <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                        <Clock className="w-4 h-4 text-emerald-700" />
+                        <span>Security & OTP Audit Log ({securityLogs.length})</span>
+                      </h4>
+                      {securityLogs.length === 0 ? (
+                        <p className="text-xs text-slate-400 py-6 text-center">
+                          No login or security events recorded in this session yet.
+                        </p>
+                      ) : (
+                        <div className="max-h-56 overflow-y-auto space-y-2">
+                          {securityLogs.map((log) => (
+                            <div
+                              key={log.id}
+                              className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2 text-xs"
+                            >
+                              <div>
+                                <p className="font-bold text-slate-900">{log.event}</p>
+                                <p className="text-[10px] text-slate-500">
+                                  Actor: <strong>{log.actor}</strong> · Method:{' '}
+                                  <strong>{log.method}</strong> · {log.timestamp}
+                                </p>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-extrabold shrink-0 ${
+                                  log.status === 'Success'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : log.status === 'Reset'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-red-100 text-red-800'
+                                }`}
+                              >
+                                {log.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

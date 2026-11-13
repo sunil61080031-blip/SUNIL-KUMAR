@@ -14,8 +14,17 @@ import {
   StudentRecord,
   FeeDiscountType,
   FeePaymentItem,
-  AttendanceRecord
+  AttendanceRecord,
+  SecurityConfig,
+  SecurityLogItem
 } from './types';
+import {
+  createInitialSecurityConfig,
+  DEFAULT_ADMIN_PASSWORD,
+  generateRandomSalt,
+  hashSecret,
+  verifySecret
+} from './utils/securityHelpers';
 import {
   INITIAL_NOTICES,
   INITIAL_BATCHES,
@@ -35,7 +44,9 @@ import { FeeEstimator } from './components/FeeEstimator';
 import { WhatsAppInquiry } from './components/WhatsAppInquiry';
 import { Footer } from './components/Footer';
 import { PrintNoticeModal } from './components/PrintNoticeModal';
+import { PrintPdfExportModal } from './components/PrintPdfExportModal';
 import { AdminPortalModal, AdminTabType } from './components/AdminPortalModal';
+import { PdfExportRequest } from './utils/ledgerHelpers';
 import {
   Building2,
   GraduationCap,
@@ -55,6 +66,8 @@ const STUDENTS_STORAGE_KEY = 'sntc_students_v6';
 const NOTICES_STORAGE_KEY = 'sntc_notices_v3';
 const INQUIRIES_STORAGE_KEY = 'sntc_inquiries_v3';
 const ADMIN_SESSION_KEY = 'sntc_admin_active_v1';
+const SECURITY_CONFIG_KEY = 'sntc_security_config_v1';
+const SECURITY_LOGS_KEY = 'sntc_security_logs_v1';
 
 export default function App() {
   // 1. State: Institute Configuration & Multi-Study Centres
@@ -146,8 +159,33 @@ export default function App() {
     }
   });
 
+  // State: Password & OTP Security Settings + Audit Logs
+  const [securityConfig, setSecurityConfig] = useState<SecurityConfig>(() => {
+    try {
+      const saved = localStorage.getItem(SECURITY_CONFIG_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading security config', e);
+    }
+    return createInitialSecurityConfig(
+      INITIAL_INSTITUTE_CONFIG.phoneDisplay,
+      INITIAL_INSTITUTE_CONFIG.email
+    );
+  });
+
+  const [securityLogs, setSecurityLogs] = useState<SecurityLogItem[]>(() => {
+    try {
+      const saved = localStorage.getItem(SECURITY_LOGS_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading security logs', e);
+    }
+    return [];
+  });
+
   // Modals
   const [selectedPrintNotice, setSelectedPrintNotice] = useState<NoticeItem | null>(null);
+  const [pdfExportRequest, setPdfExportRequest] = useState<PdfExportRequest | null>(null);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<AdminTabType>('branding');
   const [editingBatch, setEditingBatch] = useState<BatchItem | null>(null);
@@ -227,6 +265,85 @@ export default function App() {
     }
   }, [isAdmin]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(SECURITY_CONFIG_KEY, JSON.stringify(securityConfig));
+    } catch (e) {
+      console.error('Failed to sync security config', e);
+    }
+  }, [securityConfig]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SECURITY_LOGS_KEY, JSON.stringify(securityLogs));
+    } catch (e) {
+      console.error('Failed to sync security logs', e);
+    }
+  }, [securityLogs]);
+
+  // Seed salted SHA-256 hash for default admin password on first boot
+  useEffect(() => {
+    if (!securityConfig.adminPasswordHash) {
+      hashSecret(DEFAULT_ADMIN_PASSWORD, securityConfig.adminPasswordSalt).then(
+        (hashed) => {
+          setSecurityConfig((prev) =>
+            prev.adminPasswordHash ? prev : { ...prev, adminPasswordHash: hashed }
+          );
+        }
+      );
+    }
+  }, [securityConfig.adminPasswordHash, securityConfig.adminPasswordSalt]);
+
+  // Admin Session Inactivity Auto-Lock
+  useEffect(() => {
+    if (!isAdmin || securityConfig.sessionTimeoutMinutes <= 0) return;
+    const timeoutMs = securityConfig.sessionTimeoutMinutes * 60 * 1000;
+    let timer = window.setTimeout(() => {
+      setIsAdmin(false);
+      setIsAdminModalOpen(false);
+      addSecurityLog('Admin', 'Session auto-locked due to inactivity', 'System', 'Reset');
+    }, timeoutMs);
+
+    const resetTimer = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        setIsAdmin(false);
+        setIsAdminModalOpen(false);
+        addSecurityLog('Admin', 'Session auto-locked due to inactivity', 'System', 'Reset');
+      }, timeoutMs);
+    };
+
+    window.addEventListener('pointerdown', resetTimer);
+    window.addEventListener('keydown', resetTimer);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pointerdown', resetTimer);
+      window.removeEventListener('keydown', resetTimer);
+    };
+  }, [isAdmin, securityConfig.sessionTimeoutMinutes]);
+
+  const addSecurityLog = (
+    actor: string,
+    event: string,
+    method: SecurityLogItem['method'],
+    status: SecurityLogItem['status']
+  ) => {
+    const newItem: SecurityLogItem = {
+      id: `sec-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      timestamp: new Date().toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      actor,
+      event,
+      method,
+      status
+    };
+    setSecurityLogs((prev) => [newItem, ...prev].slice(0, 40));
+  };
+
   // Calculate total active enrolled count across batches + newly added student records
   const batchEnrolledSum = batches.reduce((acc, b) => acc + b.enrolledCount, 0);
   const activeStudentRecordsCount = students.filter(
@@ -238,18 +355,89 @@ export default function App() {
     Math.max(batchEnrolledSum, activeStudentRecordsCount)
   );
 
-  // Admin Handlers
-  const handleAdminLogin = (password: string): boolean => {
-    if (password === 'sunil2026') {
-      setIsAdmin(true);
-      return true;
+  // Admin Auth Handlers (Password, OTP & Two-Factor)
+  const handleVerifyAdminPassword = async (password: string): Promise<boolean> => {
+    const matched = await verifySecret(
+      password,
+      securityConfig.adminPasswordSalt,
+      securityConfig.adminPasswordHash
+    );
+    if (!matched) {
+      addSecurityLog('Admin', 'Failed admin password verification attempt', 'Password', 'Failed');
     }
-    return false;
+    return matched;
+  };
+
+  const handleCompleteAdminLogin = (method: 'Password' | 'OTP' | '2FA') => {
+    setIsAdmin(true);
+    addSecurityLog('Admin', `Admin Control Suite unlocked via ${method}`, method, 'Success');
+  };
+
+  const handleUpdateAdminPassword = async (newPassword: string) => {
+    const newSalt = generateRandomSalt();
+    const newHash = await hashSecret(newPassword, newSalt);
+    setSecurityConfig((prev) => ({
+      ...prev,
+      adminPasswordSalt: newSalt,
+      adminPasswordHash: newHash
+    }));
+    addSecurityLog('Admin', 'Admin portal password updated', 'Password', 'Reset');
+  };
+
+  const handleSetStudentPortalPassword = async (
+    studentId: string,
+    newPassword: string
+  ) => {
+    if (!newPassword.trim()) {
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.id === studentId
+            ? {
+                ...s,
+                portalPasswordHash: undefined,
+                portalPasswordSalt: undefined,
+                hasCustomPassword: false
+              }
+            : s
+        )
+      );
+      const stu = students.find((s) => s.id === studentId);
+      addSecurityLog(
+        stu ? `${stu.studentIdCode}` : 'Student',
+        'Reset student portal password to default mobile PIN',
+        'Password',
+        'Reset'
+      );
+      return;
+    }
+
+    const salt = generateRandomSalt();
+    const hash = await hashSecret(newPassword.trim(), salt);
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === studentId
+          ? {
+              ...s,
+              portalPasswordHash: hash,
+              portalPasswordSalt: salt,
+              hasCustomPassword: true
+            }
+          : s
+      )
+    );
+    const stu = students.find((s) => s.id === studentId);
+    addSecurityLog(
+      stu ? `${stu.studentIdCode}` : 'Student',
+      'Updated custom Student Portal password',
+      'Password',
+      'Reset'
+    );
   };
 
   const handleAdminLogout = () => {
     setIsAdmin(false);
     setIsAdminModalOpen(false);
+    addSecurityLog('Admin', 'Admin signed out and locked suite', 'System', 'Success');
   };
 
   const openAdminSuite = (tab: AdminTabType = 'branding') => {
@@ -693,14 +881,17 @@ export default function App() {
     navigateToSection('enrollment');
   };
 
+  const isPrintModalActive = Boolean(selectedPrintNotice || pdfExportRequest);
+
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800">
-      {/* Top Urgent Notice Ticker */}
-      <UrgentTicker
-        notices={notices}
-        instituteConfig={instituteConfig}
-        onSelectNotice={(notice) => setSelectedPrintNotice(notice)}
-      />
+    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 print:bg-white">
+      <div className={isPrintModalActive ? 'no-print flex-1 flex flex-col' : 'flex-1 flex flex-col'}>
+        {/* Top Urgent Notice Ticker */}
+        <UrgentTicker
+          notices={notices}
+          instituteConfig={instituteConfig}
+          onSelectNotice={(notice) => setSelectedPrintNotice(notice)}
+        />
 
       {/* 3-Zone Top Navigation */}
       <Navbar
@@ -866,6 +1057,7 @@ export default function App() {
             onBulkPromoteClass={handleBulkPromoteClass}
             onDisenrollStudent={handleDisenrollStudent}
             onReEnrollStudent={handleReEnrollStudent}
+            onOpenPdfExport={setPdfExportRequest}
           />
         )}
 
@@ -877,8 +1069,12 @@ export default function App() {
             staffList={staffList}
             feePlans={feePlans}
             instituteConfig={instituteConfig}
+            securityConfig={securityConfig}
+            onSetStudentPassword={handleSetStudentPortalPassword}
+            onSecurityLog={addSecurityLog}
             onRecordFeePayment={handleRecordFeePayment}
             onRecordAttendance={handleRecordAttendance}
+            onOpenPdfExport={setPdfExportRequest}
           />
         )}
 
@@ -920,6 +1116,7 @@ export default function App() {
             onReEnrollStudent={handleReEnrollStudent}
             onDeleteStudent={handleDeleteStudent}
             onClearAllStudentsPreData={handleClearAllStudentsPreData}
+            onOpenPdfExport={setPdfExportRequest}
           />
         )}
 
@@ -949,6 +1146,7 @@ export default function App() {
         instituteConfig={instituteConfig}
         onOpenAdminBranding={() => openAdminSuite('branding')}
       />
+      </div>
 
       {/* Print Notice Slip Modal */}
       <PrintNoticeModal
@@ -957,7 +1155,16 @@ export default function App() {
         onClose={() => setSelectedPrintNotice(null)}
       />
 
-      {/* Full 5-Tab Admin Control Suite */}
+      {/* Printable PDF Export Modal (Full Student Register & Individual Student Ledger Cards) */}
+      <PrintPdfExportModal
+        request={pdfExportRequest}
+        allStudents={students}
+        feePlans={feePlans}
+        instituteConfig={instituteConfig}
+        onClose={() => setPdfExportRequest(null)}
+      />
+
+      {/* Full 6-Tab Admin Control Suite */}
       <AdminPortalModal
         isOpen={isAdminModalOpen}
         onClose={() => {
@@ -965,8 +1172,15 @@ export default function App() {
           setEditingBatch(null);
         }}
         isAdmin={isAdmin}
-        onLogin={handleAdminLogin}
+        onVerifyPassword={handleVerifyAdminPassword}
+        onCompleteLogin={handleCompleteAdminLogin}
         onLogout={handleAdminLogout}
+        securityConfig={securityConfig}
+        onUpdateSecurityConfig={setSecurityConfig}
+        onUpdateAdminPassword={handleUpdateAdminPassword}
+        onSetStudentPortalPassword={handleSetStudentPortalPassword}
+        securityLogs={securityLogs}
+        onSecurityLog={addSecurityLog}
         instituteConfig={instituteConfig}
         onUpdateInstituteConfig={setInstituteConfig}
         staffList={staffList}

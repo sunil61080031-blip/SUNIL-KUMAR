@@ -7,7 +7,9 @@ import {
   InstituteConfig,
   FeePaymentItem,
   AttendanceRecord,
-  AttendanceStatus
+  AttendanceStatus,
+  SecurityConfig,
+  SecurityLogItem
 } from '../types';
 import {
   GraduationCap,
@@ -33,7 +35,12 @@ import {
   ClipboardCheck,
   XCircle,
   CalendarCheck2,
-  BarChart3
+  BarChart3,
+  Smartphone,
+  Eye,
+  EyeOff,
+  ShieldAlert,
+  Lock
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -44,6 +51,13 @@ import {
   Tooltip,
   Cell
 } from 'recharts';
+import { PdfExportRequest } from '../utils/ledgerHelpers';
+import {
+  evaluatePasswordStrength,
+  generateSixDigitOtp,
+  maskPhone,
+  verifySecret
+} from '../utils/securityHelpers';
 
 interface StudentPortalProps {
   students: StudentRecord[];
@@ -51,8 +65,17 @@ interface StudentPortalProps {
   staffList: StaffMember[];
   feePlans: FeePlan[];
   instituteConfig: InstituteConfig;
+  securityConfig: SecurityConfig;
+  onSetStudentPassword: (studentId: string, newPassword: string) => Promise<void>;
+  onSecurityLog: (
+    actor: string,
+    event: string,
+    method: SecurityLogItem['method'],
+    status: SecurityLogItem['status']
+  ) => void;
   onRecordFeePayment: (studentId: string, payment: FeePaymentItem) => void;
   onRecordAttendance: (studentId: string, record: AttendanceRecord) => void;
+  onOpenPdfExport?: (req: PdfExportRequest) => void;
 }
 
 type PortalViewTab = 'all' | 'timetable' | 'attendance' | 'fees';
@@ -63,17 +86,73 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   staffList,
   feePlans,
   instituteConfig,
+  securityConfig,
+  onSetStudentPassword,
+  onSecurityLog,
   onRecordFeePayment,
-  onRecordAttendance
+  onRecordAttendance,
+  onOpenPdfExport
 }) => {
-  // Secure Login State (Enrollment ID + optional last 4 digits of mobile PIN)
+  // Secure Login State (Password / Mobile PIN OR 6-Digit OTP)
+  const [authMode, setAuthMode] = useState<'password' | 'otp'>('password');
   const [enrollmentIdInput, setEnrollmentIdInput] = useState('');
   const [securityPinInput, setSecurityPinInput] = useState('');
+  const [showPin, setShowPin] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [loginSuccessBanner, setLoginSuccessBanner] = useState('');
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
+
+  // OTP state
+  const [otpTargetStudent, setOtpTargetStudent] = useState<StudentRecord | null>(null);
+  const [generatedOtp, setGeneratedOtp] = useState<string | null>(null);
+  const [otpInput, setOtpInput] = useState('');
+  const [otpExpiresIn, setOtpExpiresIn] = useState(0);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+
   const [loggedInStudentId, setLoggedInStudentId] = useState<string | null>(
-    students[0]?.id || null
+    securityConfig.requireStudentAuth ? null : students[0]?.id || null
   );
+  const [verifiedMethod, setVerifiedMethod] = useState<'Password' | 'PIN' | 'OTP' | null>(null);
+
+  // Student Change Password inline form
+  const [showPasswordPanel, setShowPasswordPanel] = useState(false);
+  const [newStuPass, setNewStuPass] = useState('');
+  const [confirmStuPass, setConfirmStuPass] = useState('');
+  const [stuPassFeedback, setStuPassFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(
+    null
+  );
+
   const [activeTab, setActiveTab] = useState<PortalViewTab>('fees');
+
+  React.useEffect(() => {
+    if (!securityConfig.requireStudentAuth && !loggedInStudentId && students[0]) {
+      setLoggedInStudentId(students[0].id);
+    }
+  }, [securityConfig.requireStudentAuth, loggedInStudentId, students]);
+
+  React.useEffect(() => {
+    if (lockoutSeconds <= 0) return;
+    const id = window.setInterval(() => {
+      setLockoutSeconds((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [lockoutSeconds]);
+
+  React.useEffect(() => {
+    if (otpExpiresIn <= 0 && otpCooldown <= 0) return;
+    const id = window.setInterval(() => {
+      setOtpExpiresIn((prev) => {
+        if (prev <= 1) {
+          setGeneratedOtp(null);
+          return 0;
+        }
+        return prev - 1;
+      });
+      setOtpCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [otpExpiresIn, otpCooldown]);
 
   // Attendance Filter & Add Attendance State
   const [attendanceFilter, setAttendanceFilter] = useState<string>('All');
@@ -354,47 +433,171 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     };
   }, [activeStudent, feePlans]);
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginError('');
-    const q = enrollmentIdInput.trim().toLowerCase();
-    const pin = securityPinInput.trim().replace(/\D/g, '');
-
-    if (!q) {
-      setLoginError(
-        'Please enter your Enrollment ID (e.g., STU-2026-001) to access the secure student portal.'
-      );
-      return;
-    }
-
-    const found = students.find(
+  const findStudentByIdentifier = (identifier: string): StudentRecord | undefined => {
+    const q = identifier.trim().toLowerCase();
+    const digitsOnly = q.replace(/\D/g, '');
+    return students.find(
       (s) =>
         s.studentIdCode.toLowerCase() === q ||
-        s.phone.replace(/\D/g, '') === q.replace(/\D/g, '') ||
-        s.studentName.toLowerCase().includes(q)
+        (digitsOnly.length >= 6 && s.phone.replace(/\D/g, '').endsWith(digitsOnly)) ||
+        s.studentName.toLowerCase() === q
     );
+  };
 
+  const registerStudentFailedAttempt = (actor: string, message: string) => {
+    const next = failedAttempts + 1;
+    setFailedAttempts(next);
+    if (next >= 5) {
+      setLockoutSeconds(30);
+      setFailedAttempts(0);
+      setLoginError('Too many incorrect attempts. Portal locked for 30 seconds.');
+      onSecurityLog(actor, 'Student portal locked (5 failed attempts)', 'System', 'Failed');
+    } else {
+      setLoginError(`${message} (${5 - next} attempts left)`);
+    }
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (lockoutSeconds > 0) return;
+    setLoginError('');
+    setLoginSuccessBanner('');
+
+    if (!enrollmentIdInput.trim()) {
+      setLoginError('Please enter your Enrollment ID (e.g., STU-2026-001) or registered phone.');
+      return;
+    }
+
+    const found = findStudentByIdentifier(enrollmentIdInput);
     if (!found) {
       setLoginError(
-        'Invalid Enrollment ID. Please enter a valid ID (such as STU-2026-001) or select a verified student profile below.'
+        'No matching student record found. Check your Enrollment ID (e.g., STU-2026-001) or mobile number.'
       );
       return;
     }
 
-    // If user entered a PIN / mobile digits, verify it matches the student's registered phone
-    if (pin.length > 0) {
-      const studentPhoneDigits = found.phone.replace(/\D/g, '');
-      if (!studentPhoneDigits.endsWith(pin) && studentPhoneDigits !== pin) {
+    if (securityConfig.requireStudentAuth) {
+      if (!securityPinInput.trim()) {
         setLoginError(
-          `Security PIN mismatch for ${found.studentIdCode}. Please enter the last 4 digits of registered phone (${studentPhoneDigits.slice(-4)}) or leave PIN blank for quick demo access.`
+          found.hasCustomPassword
+            ? `Enter your custom Student Portal Password for ${found.studentIdCode}.`
+            : `Enter your 4-digit Mobile PIN (last 4 digits of registered phone) for ${found.studentIdCode}.`
         );
         return;
       }
+
+      if (found.hasCustomPassword && found.portalPasswordHash && found.portalPasswordSalt) {
+        const ok = await verifySecret(
+          securityPinInput.trim(),
+          found.portalPasswordSalt,
+          found.portalPasswordHash
+        );
+        if (!ok) {
+          onSecurityLog(found.studentIdCode, 'Failed student portal password attempt', 'Password', 'Failed');
+          registerStudentFailedAttempt(found.studentIdCode, 'Incorrect Student Portal password.');
+          return;
+        }
+        setVerifiedMethod('Password');
+        onSecurityLog(found.studentIdCode, 'Student logged in via custom Password', 'Password', 'Success');
+      } else {
+        const pinDigits = securityPinInput.trim().replace(/\D/g, '');
+        const studentPhoneDigits = found.phone.replace(/\D/g, '');
+        if (!pinDigits || !studentPhoneDigits.endsWith(pinDigits)) {
+          onSecurityLog(found.studentIdCode, 'Failed student mobile PIN attempt', 'Password', 'Failed');
+          registerStudentFailedAttempt(
+            found.studentIdCode,
+            `Invalid Security PIN for ${found.studentIdCode}.`
+          );
+          return;
+        }
+        setVerifiedMethod('PIN');
+        onSecurityLog(found.studentIdCode, 'Student logged in via Mobile PIN', 'Password', 'Success');
+      }
     }
 
+    setFailedAttempts(0);
     setLoggedInStudentId(found.id);
     setEnrollmentIdInput('');
     setSecurityPinInput('');
+    setShowPasswordPanel(false);
+  };
+
+  const handleSendStudentOtp = () => {
+    if (lockoutSeconds > 0 || otpCooldown > 0) return;
+    setLoginError('');
+    setLoginSuccessBanner('');
+
+    const found = findStudentByIdentifier(enrollmentIdInput);
+    if (!found) {
+      setLoginError('Enter a valid Enrollment ID or Registered Mobile Number first to receive OTP.');
+      return;
+    }
+
+    const code = generateSixDigitOtp();
+    setOtpTargetStudent(found);
+    setGeneratedOtp(code);
+    setOtpInput('');
+    setOtpExpiresIn(120);
+    setOtpCooldown(25);
+    setLoginSuccessBanner(
+      `6-Digit OTP sent to ${found.studentName}'s registered mobile ${maskPhone(found.phone)} (valid 2 min).`
+    );
+    onSecurityLog(
+      found.studentIdCode,
+      `6-Digit OTP sent to ${maskPhone(found.phone)}`,
+      'OTP',
+      'Success'
+    );
+  };
+
+  const handleStudentOtpVerifySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (lockoutSeconds > 0) return;
+    setLoginError('');
+
+    if (!otpTargetStudent || !generatedOtp || otpExpiresIn <= 0) {
+      setLoginError('OTP expired or not sent yet. Click "Send 6-Digit OTP" first.');
+      return;
+    }
+
+    if (otpInput.trim() !== generatedOtp) {
+      onSecurityLog(otpTargetStudent.studentIdCode, 'Invalid Student OTP entered', 'OTP', 'Failed');
+      registerStudentFailedAttempt(otpTargetStudent.studentIdCode, 'Invalid 6-digit OTP code.');
+      return;
+    }
+
+    setLoggedInStudentId(otpTargetStudent.id);
+    setVerifiedMethod('OTP');
+    onSecurityLog(otpTargetStudent.studentIdCode, 'Student unlocked portal via 6-Digit OTP', 'OTP', 'Success');
+    setGeneratedOtp(null);
+    setOtpInput('');
+    setOtpExpiresIn(0);
+    setOtpTargetStudent(null);
+    setEnrollmentIdInput('');
+    setFailedAttempts(0);
+    setLoginSuccessBanner('');
+    setShowPasswordPanel(false);
+  };
+
+  const handleSaveStudentPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeStudent) return;
+    setStuPassFeedback(null);
+    if (newStuPass.trim().length < 6) {
+      setStuPassFeedback({ type: 'err', text: 'Password must be at least 6 characters.' });
+      return;
+    }
+    if (newStuPass !== confirmStuPass) {
+      setStuPassFeedback({ type: 'err', text: 'Passwords do not match.' });
+      return;
+    }
+    await onSetStudentPassword(activeStudent.id, newStuPass.trim());
+    setNewStuPass('');
+    setConfirmStuPass('');
+    setStuPassFeedback({
+      type: 'ok',
+      text: 'Custom Portal Password saved! Use it (or 6-Digit OTP) next time you log in.'
+    });
   };
 
   const handleAddAttendanceSubmit = (e: React.FormEvent) => {
@@ -479,153 +682,401 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
       className="py-8 bg-slate-100/90 border-b border-slate-200"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-5">
-        {/* Section Header + Secure Enrollment ID Login Bar */}
+        {/* Section Header + Secure Password / OTP Login Controls */}
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
           <div>
             <div className="flex items-center gap-2 text-xs font-bold text-emerald-800 uppercase tracking-wider mb-1">
               <ShieldCheck className="w-4 h-4 text-emerald-700" />
-              <span>Secure Enrollment ID Authentication Portal</span>
+              <span>Password & 6-Digit OTP Protected Student Portal</span>
             </div>
             <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
               Secure Student Portal — Fee Balance, Attendance & Timetable
             </h2>
             <p className="text-sm font-semibold text-emerald-800 font-hindi mt-0.5">
-              सुरक्षित छात्र पोर्टल — नामांकन आईडी (Enrollment ID) द्वारा शुल्क विवरण, उपस्थिति इतिहास एवं बैच समय-सारणी देखें
+              सुरक्षित छात्र पोर्टल — पासवर्ड (Password) या 6-अंकीय ओटीपी (OTP) से लॉग इन कर शुल्क, उपस्थिति एवं समय-सारणी देखें
             </p>
           </div>
 
-          {/* Secure Enrollment ID + PIN Form */}
-          <form
-            onSubmit={handleLoginSubmit}
-            className="flex flex-wrap items-center gap-2 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-xs"
-          >
-            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
-              <GraduationCap className="w-4 h-4 text-emerald-700 shrink-0" />
-              <input
-                type="text"
-                value={enrollmentIdInput}
-                onChange={(e) => setEnrollmentIdInput(e.target.value)}
-                placeholder="Enrollment ID (STU-2026-001)"
-                className="text-xs bg-transparent focus:outline-hidden font-mono font-bold text-slate-900 w-44 sm:w-48"
-              />
-            </div>
-
-            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
-              <KeyRound className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              <input
-                type="password"
-                maxLength={10}
-                value={securityPinInput}
-                onChange={(e) => setSecurityPinInput(e.target.value)}
-                placeholder="Phone Last 4 Digits (Opt)"
-                className="text-xs bg-transparent focus:outline-hidden font-mono text-slate-900 w-36"
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>Verify & Login</span>
-            </button>
-
-            {activeStudent && (
+          {/* Auth Mode Switcher Pill + Lock Button when logged in */}
+          {activeStudent && (
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => setLoggedInStudentId(null)}
-                className="px-3 py-2 bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 rounded-xl text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                onClick={() => setShowPasswordPanel(!showPasswordPanel)}
+                className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-emerald-700" />
+                <span>{activeStudent.hasCustomPassword ? 'Update Password' : 'Set Password'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoggedInStudentId(null);
+                  setVerifiedMethod(null);
+                  setShowPasswordPanel(false);
+                }}
+                className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
                 title="Lock & Logout Student Session"
               >
                 <LogOut className="w-3.5 h-3.5" />
-                <span>Lock</span>
+                <span>Lock Portal</span>
               </button>
-            )}
-          </form>
+            </div>
+          )}
         </div>
 
         {loginError && (
-          <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center gap-2">
+          <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold rounded-xl flex items-center gap-2">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{loginError}</span>
           </div>
         )}
 
-        {/* Quick Enrolled Student Account Switcher (with Enrollment ID & Last-4 PIN hint) */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-bold text-slate-600 mr-1 flex items-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
-              <span>Verified Enrollment IDs (1-Click Switch):</span>
-            </span>
-            {students.map((stu) => {
-              const isSelected = activeStudent?.id === stu.id;
-              const last4 = stu.phone.replace(/\D/g, '').slice(-4);
-              return (
-                <button
-                  key={stu.id}
-                  type="button"
-                  onClick={() => {
-                    setLoggedInStudentId(stu.id);
-                    setLoginError('');
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 border cursor-pointer ${
-                    isSelected
-                      ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
-                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <span className="font-mono font-bold">{stu.studentIdCode}</span>
-                  <span>·</span>
-                  <span>{stu.studentName}</span>
-                  <span
-                    className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
+        {loginSuccessBanner && (
+          <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-xl flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+            <span>{loginSuccessBanner}</span>
+          </div>
+        )}
+
+        {/* Quick Enrolled Student Account Switcher (Fills ID in Strict Auth Mode, or Switches directly in Demo Mode) */}
+        {securityConfig.showDemoLoginHelpers && (
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold text-slate-600 mr-1 flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
+                <span>
+                  {securityConfig.requireStudentAuth
+                    ? 'Quick-Fill Student ID for Login:'
+                    : 'Verified Enrollment IDs (Demo Switch):'}
+                </span>
+              </span>
+              {students.map((stu) => {
+                const isSelected = activeStudent?.id === stu.id;
+                const last4 = stu.phone.replace(/\D/g, '').slice(-4);
+                return (
+                  <button
+                    key={stu.id}
+                    type="button"
+                    onClick={() => {
+                      setLoginError('');
+                      if (securityConfig.requireStudentAuth) {
+                        setEnrollmentIdInput(stu.studentIdCode);
+                        if (!stu.hasCustomPassword && authMode === 'password') {
+                          setSecurityPinInput(last4);
+                        } else {
+                          setSecurityPinInput('');
+                        }
+                      } else {
+                        setLoggedInStudentId(stu.id);
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 border cursor-pointer ${
                       isSelected
-                        ? 'bg-emerald-800 text-emerald-100'
-                        : 'bg-slate-200 text-slate-700'
+                        ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                     }`}
                   >
-                    PIN:{last4}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Locked / Logged-Out State */}
-        {!activeStudent ? (
-          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center max-w-xl mx-auto space-y-5 shadow-xs">
-            <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center mx-auto border border-emerald-200">
-              <ShieldCheck className="w-7 h-7" />
+                    <span className="font-mono font-bold">{stu.studentIdCode}</span>
+                    <span>·</span>
+                    <span>{stu.studentName}</span>
+                    <span
+                      className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
+                        isSelected
+                          ? 'bg-emerald-800 text-emerald-100'
+                          : 'bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {stu.hasCustomPassword ? 'Custom Pwd' : `PIN:${last4}`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-            <div className="space-y-1.5">
+          </div>
+        )}
+
+        {/* Locked / Password or OTP Authentication Screen */}
+        {!activeStudent ? (
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 max-w-lg mx-auto space-y-5 shadow-sm">
+            <div className="text-center space-y-2">
+              <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center mx-auto border border-emerald-200">
+                <Lock className="w-7 h-7" />
+              </div>
               <h3 className="text-xl font-extrabold text-slate-900">
-                Student Portal Locked — Enter Enrollment ID
+                Student Portal Security Gate
               </h3>
-              <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
-                Enter your official Enrollment ID (for example{' '}
-                <code className="font-mono font-bold text-slate-800">STU-2026-001</code>) and
-                registered mobile PIN (last 4 digits, e.g.{' '}
-                <code className="font-mono font-bold text-slate-800">4501</code>) to unlock
-                your personalized fee ledger, attendance register, and batch timetable.
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                Verify your identity using your <strong>Enrollment ID + Password/PIN</strong> OR a{' '}
+                <strong>6-Digit Registered Mobile OTP</strong> to view fees, attendance & timetable.
               </p>
             </div>
-            <div className="flex flex-wrap justify-center gap-2 pt-2">
-              {students.slice(0, 3).map((stu) => (
+
+            {/* Password vs OTP Toggle */}
+            {securityConfig.allowStudentOtpLogin && (
+              <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold">
                 <button
-                  key={stu.id}
                   type="button"
-                  onClick={() => setLoggedInStudentId(stu.id)}
-                  className="px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 text-xs font-bold font-mono cursor-pointer"
+                  onClick={() => {
+                    setAuthMode('password');
+                    setLoginError('');
+                  }}
+                  className={`py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                    authMode === 'password'
+                      ? 'bg-white text-emerald-800 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
                 >
-                  Login as {stu.studentIdCode} ({stu.studentName})
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Password / Mobile PIN</span>
                 </button>
-              ))}
-            </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('otp');
+                    setLoginError('');
+                  }}
+                  className={`py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                    authMode === 'otp'
+                      ? 'bg-white text-emerald-800 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>6-Digit Mobile OTP</span>
+                </button>
+              </div>
+            )}
+
+            {lockoutSeconds > 0 && (
+              <div className="p-3 bg-red-50 border border-red-300 text-red-800 text-xs font-bold rounded-xl flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0 text-red-600" />
+                <span>Security Lockout Active — Retry in {lockoutSeconds}s</span>
+              </div>
+            )}
+
+            {/* Simulated SMS OTP Gateway Preview when active */}
+            {authMode === 'otp' && generatedOtp && otpExpiresIn > 0 && otpTargetStudent && (
+              <div className="p-3 rounded-xl bg-slate-900 text-white border border-emerald-500/40 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                    SMS OTP to {maskPhone(otpTargetStudent.phone)} · {otpExpiresIn}s left
+                  </p>
+                  <p className="text-base font-mono font-black tracking-widest text-amber-300 mt-0.5">
+                    {generatedOtp}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOtpInput(generatedOtp)}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer shrink-0"
+                >
+                  Auto-Fill OTP
+                </button>
+              </div>
+            )}
+
+            {authMode === 'password' ? (
+              <form onSubmit={handleLoginSubmit} className="space-y-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Enrollment ID or Registered Mobile
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    disabled={lockoutSeconds > 0}
+                    value={enrollmentIdInput}
+                    onChange={(e) => setEnrollmentIdInput(e.target.value)}
+                    placeholder="e.g. STU-2026-001"
+                    className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold text-slate-900 focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Portal Password or 4-Digit Mobile PIN
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPin ? 'text' : 'password'}
+                      required={securityConfig.requireStudentAuth}
+                      disabled={lockoutSeconds > 0}
+                      value={securityPinInput}
+                      onChange={(e) => setSecurityPinInput(e.target.value)}
+                      placeholder="Custom Password or Last 4 Digits of Phone"
+                      className="w-full pl-3.5 pr-10 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono text-slate-900 focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPin(!showPin)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                      aria-label={showPin ? 'Hide password' : 'Show password'}
+                    >
+                      {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  disabled={lockoutSeconds > 0}
+                  className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <LogIn className="w-4 h-4" />
+                  <span>Verify Password & Open Portal</span>
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleStudentOtpVerifySubmit} className="space-y-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Enrollment ID or Registered Mobile Number
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      disabled={lockoutSeconds > 0}
+                      value={enrollmentIdInput}
+                      onChange={(e) => setEnrollmentIdInput(e.target.value)}
+                      placeholder="e.g. STU-2026-001 or 9876544501"
+                      className="flex-1 px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold text-slate-900 focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                    />
+                    <button
+                      type="button"
+                      disabled={otpCooldown > 0 || lockoutSeconds > 0}
+                      onClick={handleSendStudentOtp}
+                      className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-bold rounded-xl shrink-0 cursor-pointer"
+                    >
+                      {otpCooldown > 0 ? `${otpCooldown}s` : generatedOtp ? 'Resend OTP' : 'Send OTP'}
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Enter 6-Digit Verification OTP
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    required
+                    disabled={lockoutSeconds > 0}
+                    value={otpInput}
+                    onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                    placeholder="6-Digit OTP Code"
+                    className="w-full px-4 py-2.5 text-sm text-center tracking-widest font-mono font-bold bg-slate-50 border border-slate-300 rounded-xl focus:outline-hidden focus:border-emerald-600 focus:bg-white"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={lockoutSeconds > 0}
+                  className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Verify 6-Digit OTP & Login</span>
+                </button>
+              </form>
+            )}
           </div>
         ) : (
           <div className="space-y-6">
+            {/* Inline Student Password Update Drawer */}
+            {showPasswordPanel && (
+              <form
+                onSubmit={handleSaveStudentPassword}
+                className="bg-white rounded-2xl border border-emerald-300 p-5 shadow-xs space-y-3"
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <div>
+                    <h4 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <KeyRound className="w-4 h-4 text-emerald-700" />
+                      <span>
+                        Set Personal Portal Password — {activeStudent.studentName} (
+                        {activeStudent.studentIdCode})
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      Protected with salted SHA-256 hashing. You can still log in via 6-Digit OTP anytime.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPasswordPanel(false)}
+                    className="text-xs font-bold text-slate-500 hover:text-slate-900 cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                {stuPassFeedback && (
+                  <div
+                    className={`p-2.5 rounded-lg text-xs font-bold border ${
+                      stuPassFeedback.type === 'ok'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        : 'bg-rose-50 border-rose-200 text-rose-700'
+                    }`}
+                  >
+                    {stuPassFeedback.text}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+                  <div>
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={newStuPass}
+                      onChange={(e) => setNewStuPass(e.target.value)}
+                      placeholder="New Password (min 6 chars)"
+                      className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-300 rounded-xl"
+                    />
+                    {newStuPass && (
+                      <span
+                        className={`text-[10px] font-bold block mt-1 ${
+                          evaluatePasswordStrength(newStuPass).textColor
+                        }`}
+                      >
+                        Strength: {evaluatePasswordStrength(newStuPass).label}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={confirmStuPass}
+                    onChange={(e) => setConfirmStuPass(e.target.value)}
+                    placeholder="Confirm New Password"
+                    className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-300 rounded-xl"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 px-4 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl cursor-pointer"
+                    >
+                      Save Password
+                    </button>
+                    {activeStudent.hasCustomPassword && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await onSetStudentPassword(activeStudent.id, '');
+                          setStuPassFeedback({
+                            type: 'ok',
+                            text: 'Reverted to default 4-digit mobile PIN.'
+                          });
+                        }}
+                        className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer"
+                      >
+                        Use PIN
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </form>
+            )}
+
             {/* Student Identity & Security Status Banner */}
             <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white rounded-2xl p-6 shadow-md flex flex-col lg:flex-row lg:items-center justify-between gap-6">
               <div className="space-y-2.5">
@@ -634,6 +1085,11 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     <ShieldCheck className="w-3.5 h-3.5" />
                     <span>ID: {activeStudent.studentIdCode}</span>
                   </span>
+                  {verifiedMethod && (
+                    <span className="text-[11px] font-bold bg-sky-500/20 text-sky-200 border border-sky-400/30 px-2.5 py-0.5 rounded-sm">
+                      Verified via {verifiedMethod}
+                    </span>
+                  )}
                   <span
                     className={`text-xs font-bold px-2.5 py-0.5 rounded-sm ${
                       activeStudent.enrollmentStatus === 'Enrolled'
@@ -1227,11 +1683,21 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       </div>
                       <button
                         type="button"
-                        onClick={() => window.print()}
-                        className="p-2 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-                        title="Print Fee Statement"
+                        onClick={() => {
+                          if (onOpenPdfExport) {
+                            onOpenPdfExport({
+                              type: 'student-ledger',
+                              studentId: activeStudent.id
+                            });
+                          } else {
+                            window.print();
+                          }
+                        }}
+                        className="px-3 py-1.5 text-white bg-slate-900 hover:bg-slate-800 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Export Official Ledger Card (PDF)"
                       >
-                        <Printer className="w-4 h-4" />
+                        <Printer className="w-3.5 h-3.5 text-amber-300" />
+                        <span>Export Ledger PDF</span>
                       </button>
                     </div>
 
