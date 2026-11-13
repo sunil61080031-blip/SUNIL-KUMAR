@@ -8,6 +8,7 @@ import {
   PdfExportRequest,
   getWingForClass,
   computeStudentFinancials,
+  computeStudentAttendanceSummary,
   buildMonthlyLedgerRows,
   formatMonthYearFromDate
 } from '../utils/ledgerHelpers';
@@ -21,7 +22,9 @@ import {
   AlertCircle,
   Calendar,
   Building2,
-  UserCheck
+  UserCheck,
+  ClipboardCheck,
+  IndianRupee
 } from 'lucide-react';
 
 interface PrintPdfExportModalProps {
@@ -39,12 +42,12 @@ export const PrintPdfExportModal: React.FC<PrintPdfExportModalProps> = ({
   instituteConfig,
   onClose
 }) => {
-  const [exportType, setExportType] = useState<'register' | 'student-ledger'>(
-    request?.type || 'register'
-  );
+  const [exportType, setExportType] = useState<
+    'register' | 'student-ledger' | 'student-report-card'
+  >(request?.type || 'register');
   const [registerScope, setRegisterScope] = useState<'requested' | 'all'>('requested');
   const [selectedStudentId, setSelectedStudentId] = useState<string>(
-    request?.type === 'student-ledger'
+    request?.type === 'student-ledger' || request?.type === 'student-report-card'
       ? request.studentId
       : allStudents[0]?.id || ''
   );
@@ -211,6 +214,22 @@ export const PrintPdfExportModal: React.FC<PrintPdfExportModalProps> = ({
                 <FileText className="w-3.5 h-3.5" />
                 <span>Individual Student Ledger Card</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setExportType('student-report-card');
+                  setPageOrientation('portrait');
+                }}
+                className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 cursor-pointer ${
+                  exportType === 'student-report-card'
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                <ClipboardCheck className="w-3.5 h-3.5" />
+                <span>Student Report Card Summary</span>
+              </button>
             </div>
 
             {/* Mode-Specific Options */}
@@ -268,7 +287,13 @@ export const PrintPdfExportModal: React.FC<PrintPdfExportModalProps> = ({
                       onChange={(e) => setBatchPrintAllCards(e.target.checked)}
                       className="rounded text-emerald-500"
                     />
-                    <span>Print All {allStudents.length} Ledger Cards (1/page)</span>
+                    <span>
+                      Print All {allStudents.length}{' '}
+                      {exportType === 'student-report-card'
+                        ? 'Report Cards'
+                        : 'Ledger Cards'}{' '}
+                      (1/page)
+                    </span>
                   </label>
                 </>
               )}
@@ -1038,6 +1063,467 @@ export const PrintPdfExportModal: React.FC<PrintPdfExportModalProps> = ({
                         <div className="w-32 border-b border-slate-400 pb-4 mb-1" />
                         <p className="text-[10px] font-bold text-slate-700">
                           Parent / Student Signature
+                        </p>
+                      </div>
+                      <div className="text-center">
+                        <div className="w-36 border-b border-slate-900 pb-1 mb-1 font-serif italic text-xs font-bold text-slate-800">
+                          {instituteConfig.founder}
+                        </div>
+                        <p className="text-[10px] font-bold text-slate-900">
+                          {instituteConfig.founder} ({instituteConfig.role})
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+          {/* --------------------------------------------------------------- */}
+          {/* VIEW C: STUDENT REPORT CARD SUMMARY (ATTENDANCE % & DUES CLEARED)*/}
+          {/* --------------------------------------------------------------- */}
+          {exportType === 'student-report-card' &&
+            ledgerCardsToPrint.map((student, cardIdx) => {
+              const fin = computeStudentFinancials(student, feePlans);
+              const att = computeStudentAttendanceSummary(student);
+              const wing = getWingForClass(student.classNum);
+              const centreObj =
+                instituteConfig.studyCentres.find((c) => c.id === student.centreId) ||
+                instituteConfig.studyCentres[0];
+
+              const totalCombinedBilled =
+                fin.prevYearTotalAssigned + fin.currentSessionBilled;
+              const totalDuesCleared =
+                fin.prevYearCleared + fin.currentSessionPaid;
+              const duesClearancePercent =
+                totalCombinedBilled > 0
+                  ? Math.min(
+                      100,
+                      Math.round((totalDuesCleared / totalCombinedBilled) * 100)
+                    )
+                  : 100;
+              const recentReceipts = (student.feePayments || []).slice(0, 5);
+
+              return (
+                <div
+                  key={`rc-${student.id}`}
+                  className={`space-y-4 ${
+                    cardIdx > 0
+                      ? 'print-page-break pt-6 border-t-4 border-dashed border-slate-300 print:border-0 print:pt-0'
+                      : ''
+                  }`}
+                >
+                  {/* Formal Report Card Letterhead */}
+                  <div className="border-b-2 border-slate-900 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-950 bg-emerald-100 px-2.5 py-0.5 rounded border border-emerald-300 mb-1">
+                        <ClipboardCheck className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Official Student Report Card &amp; Dues Clearance Summary</span>
+                      </div>
+                      <h1 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900 uppercase">
+                        {instituteConfig.name}
+                      </h1>
+                      <p className="text-sm font-bold text-emerald-800 font-hindi">
+                        {instituteConfig.hindiName}
+                      </p>
+                      <p className="text-[11px] text-slate-600">
+                        {instituteConfig.address} · Helpline: {instituteConfig.phoneDisplay}
+                      </p>
+                    </div>
+
+                    <div className="bg-slate-900 text-white px-4 py-2.5 rounded-xl text-left sm:text-right shrink-0">
+                      <span className="text-[10px] uppercase tracking-wider text-amber-300 font-bold block">
+                        Report Card · ID
+                      </span>
+                      <span className="text-base font-black font-mono tracking-tight">
+                        {student.studentIdCode}
+                      </span>
+                      <span className="block text-[10px] text-slate-300 font-mono">
+                        Session: {student.academicSession || '2026-27'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Student Academic Identity Banner */}
+                  <div className="p-3.5 rounded-xl border border-slate-300 bg-slate-50/80 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs print-avoid-break">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                        Student Name
+                      </span>
+                      <span className="font-extrabold text-slate-900 text-sm block">
+                        {student.studentName}
+                      </span>
+                      <span className="text-[11px] text-slate-600">
+                        S/O · D/O {student.parentName}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                        Wing &amp; Class
+                      </span>
+                      <span className="font-bold text-emerald-900 block">
+                        {student.classLevel}
+                      </span>
+                      <span className="text-[11px] text-slate-600">
+                        {wing} ({student.board})
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                        Batch &amp; Centre
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 block">
+                        {student.batchCode} ({student.shift})
+                      </span>
+                      <span className="text-[11px] text-slate-600">
+                        {centreObj?.name}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                        Status &amp; Admission
+                      </span>
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                          student.enrollmentStatus === 'Enrolled'
+                            ? 'bg-emerald-100 text-emerald-900'
+                            : student.enrollmentStatus === 'Re-enrolled'
+                            ? 'bg-blue-100 text-blue-900'
+                            : 'bg-rose-100 text-rose-900'
+                        }`}
+                      >
+                        {student.enrollmentStatus}
+                      </span>
+                      <span className="block text-[11px] font-mono text-slate-600 mt-0.5">
+                        Adm: {student.enrollmentDate}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Primary Highlights: Attendance Percentage & Total Dues Cleared */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 print-avoid-break">
+                    {/* 1. Attendance Percentage KPI */}
+                    <div
+                      className={`p-3.5 rounded-xl border-2 space-y-1.5 ${
+                        !att.hasRecords
+                          ? 'bg-slate-50 border-slate-300'
+                          : att.attendancePercentage >= 75
+                          ? 'bg-emerald-50/70 border-emerald-400'
+                          : 'bg-amber-50/70 border-amber-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                          Attendance Percentage
+                        </span>
+                        <UserCheck className="w-4 h-4 text-emerald-700" />
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-2xl font-black font-mono text-slate-900">
+                          {att.hasRecords ? `${att.attendancePercentage}%` : 'N/A'}
+                        </span>
+                        <span className="text-[11px] font-semibold text-slate-600">
+                          ({att.attendedCount}/{att.totalSessions} classes)
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${
+                            att.attendancePercentage >= 75
+                              ? 'bg-emerald-600'
+                              : 'bg-amber-500'
+                          }`}
+                          style={{
+                            width: `${att.hasRecords ? att.attendancePercentage : 0}%`
+                          }}
+                        />
+                      </div>
+                      <span className="block text-[10px] font-bold text-emerald-900">
+                        {att.standingLabel}
+                      </span>
+                    </div>
+
+                    {/* 2. Total Dues Cleared KPI */}
+                    <div className="p-3.5 rounded-xl border-2 border-emerald-500 bg-emerald-50/80 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-900">
+                          Total Dues Cleared
+                        </span>
+                        <IndianRupee className="w-4 h-4 text-emerald-700" />
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-2xl font-black font-mono text-emerald-900">
+                          ₹{totalDuesCleared.toLocaleString('en-IN')}
+                        </span>
+                        <span className="text-[11px] font-bold text-emerald-800">
+                          ({duesClearancePercent}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 bg-emerald-200 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-700"
+                          style={{ width: `${duesClearancePercent}%` }}
+                        />
+                      </div>
+                      <span className="block text-[10px] text-emerald-900 font-semibold">
+                        2026-27: ₹{fin.currentSessionPaid.toLocaleString('en-IN')} · Prev Yr: ₹
+                        {fin.prevYearCleared.toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    {/* 3. Balance Pending / Clearance Status */}
+                    <div
+                      className={`p-3.5 rounded-xl border-2 space-y-1.5 ${
+                        fin.totalCombinedPending === 0
+                          ? 'bg-sky-50/70 border-sky-400'
+                          : 'bg-rose-50/70 border-rose-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700">
+                          Balance Pending Due
+                        </span>
+                        {fin.totalCombinedPending === 0 ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-rose-700" />
+                        )}
+                      </div>
+                      <span
+                        className={`text-2xl font-black font-mono block ${
+                          fin.totalCombinedPending === 0
+                            ? 'text-emerald-800'
+                            : 'text-rose-800'
+                        }`}
+                      >
+                        ₹{fin.totalCombinedPending.toLocaleString('en-IN')}
+                      </span>
+                      <span className="block text-[10px] font-bold text-slate-700">
+                        {fin.totalCombinedPending === 0
+                          ? 'NO DUES PENDING (ALL CLEARED)'
+                          : `Session Due: ₹${fin.currentSessionPending.toLocaleString('en-IN')} · Prev Due: ₹${fin.prevYearRemainingDue.toLocaleString('en-IN')}`}
+                      </span>
+                      {fin.advanceCreditNextMonths > 0 && (
+                        <span className="inline-block px-1.5 py-0.5 rounded bg-sky-100 text-sky-900 text-[10px] font-bold">
+                          +₹{fin.advanceCreditNextMonths} Next Mo. Advance
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 4. Fee Plan & Concession Summary */}
+                    <div className="p-3.5 rounded-xl border border-slate-300 bg-slate-50 space-y-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 block">
+                        Fee Plan &amp; Receipts
+                      </span>
+                      <span className="text-xl font-black font-mono text-slate-900 block">
+                        ₹{student.netMonthlyFee}/mo
+                      </span>
+                      <span className="block text-[10px] font-semibold text-emerald-800">
+                        {student.discountType}
+                      </span>
+                      <span className="block text-[10px] text-slate-600">
+                        Receipts Logged: <strong>{student.feePayments?.length || 0}</strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Detailed Attendance Log + Dues Clearance Breakdown */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 print-avoid-break">
+                    {/* Left: Attendance Summary & Recent Sessions */}
+                    <div className="border border-slate-300 rounded-xl overflow-hidden flex flex-col">
+                      <div className="bg-slate-900 text-white px-3.5 py-2 text-[11px] font-bold uppercase tracking-wider flex items-center justify-between">
+                        <span>Attendance Record Summary</span>
+                        <span className="font-mono text-emerald-300">
+                          {att.hasRecords ? `${att.attendancePercentage}% Present` : '0 Sessions'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-4 divide-x divide-slate-200 border-b border-slate-200 bg-slate-50 text-center text-[11px]">
+                        <div className="p-2">
+                          <span className="block text-[10px] text-slate-500">Present</span>
+                          <strong className="font-mono text-emerald-800 text-sm">
+                            {att.presentCount}
+                          </strong>
+                        </div>
+                        <div className="p-2">
+                          <span className="block text-[10px] text-slate-500">Late</span>
+                          <strong className="font-mono text-amber-800 text-sm">
+                            {att.lateCount}
+                          </strong>
+                        </div>
+                        <div className="p-2">
+                          <span className="block text-[10px] text-slate-500">Absent</span>
+                          <strong className="font-mono text-rose-800 text-sm">
+                            {att.absentCount}
+                          </strong>
+                        </div>
+                        <div className="p-2">
+                          <span className="block text-[10px] text-slate-500">Leave</span>
+                          <strong className="font-mono text-blue-800 text-sm">
+                            {att.leaveCount}
+                          </strong>
+                        </div>
+                      </div>
+
+                      <div className="divide-y divide-slate-200 text-[11px] flex-1">
+                        {att.recentLogs.length === 0 ? (
+                          <p className="p-4 text-center text-slate-500">
+                            No classroom attendance sessions have been recorded for this student yet.
+                          </p>
+                        ) : (
+                          att.recentLogs.map((rec) => (
+                            <div
+                              key={rec.id}
+                              className="px-3 py-2 flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0">
+                                <span className="font-bold text-slate-900 block truncate">
+                                  {rec.subjectTopic}
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  {rec.date} · {rec.shift} · By {rec.markedBy}
+                                </span>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                                  rec.status === 'Present'
+                                    ? 'bg-emerald-100 text-emerald-900'
+                                    : rec.status === 'Late'
+                                    ? 'bg-amber-100 text-amber-900'
+                                    : rec.status === 'Absent'
+                                    ? 'bg-rose-100 text-rose-900'
+                                    : 'bg-blue-100 text-blue-900'
+                                }`}
+                              >
+                                {rec.status}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Right: Total Dues Cleared Summary & Recent Payments */}
+                    <div className="border border-slate-300 rounded-xl overflow-hidden flex flex-col">
+                      <div className="bg-slate-900 text-white px-3.5 py-2 text-[11px] font-bold uppercase tracking-wider flex items-center justify-between">
+                        <span>Dues Clearance &amp; Fee Statement</span>
+                        <span className="font-mono text-amber-300">
+                          Cleared: ₹{totalDuesCleared.toLocaleString('en-IN')}
+                        </span>
+                      </div>
+
+                      <table className="w-full text-left border-collapse text-[11px]">
+                        <tbody className="divide-y divide-slate-200">
+                          <tr>
+                            <td className="py-1.5 px-3 font-semibold text-slate-700">
+                              Previous Year (2025-26) Billed / Cleared
+                            </td>
+                            <td className="py-1.5 px-3 text-right font-mono">
+                              ₹{fin.prevYearTotalAssigned.toLocaleString('en-IN')} /{' '}
+                              <strong className="text-emerald-800">
+                                ₹{fin.prevYearCleared.toLocaleString('en-IN')}
+                              </strong>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="py-1.5 px-3 font-semibold text-slate-700">
+                              Current Session ({student.academicSession || '2026-27'}) Billed / Paid
+                            </td>
+                            <td className="py-1.5 px-3 text-right font-mono">
+                              ₹{fin.currentSessionBilled.toLocaleString('en-IN')} /{' '}
+                              <strong className="text-emerald-800">
+                                ₹{fin.currentSessionPaid.toLocaleString('en-IN')}
+                              </strong>
+                            </td>
+                          </tr>
+                          <tr className="bg-emerald-50/70">
+                            <td className="py-2 px-3 font-extrabold text-emerald-950">
+                              Combined Total Dues Cleared ({duesClearancePercent}%)
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-black text-emerald-800">
+                              ₹{totalDuesCleared.toLocaleString('en-IN')}
+                            </td>
+                          </tr>
+                          <tr className="bg-slate-50">
+                            <td className="py-2 px-3 font-extrabold text-slate-900">
+                              Net Balance Remaining Due
+                            </td>
+                            <td
+                              className={`py-2 px-3 text-right font-mono font-black ${
+                                fin.totalCombinedPending === 0
+                                  ? 'text-emerald-700'
+                                  : 'text-rose-700'
+                              }`}
+                            >
+                              ₹{fin.totalCombinedPending.toLocaleString('en-IN')}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+
+                      <div className="bg-slate-100 px-3 py-1 border-y border-slate-200 text-[10px] font-bold uppercase text-slate-600">
+                        Recent Verified Payment Receipts ({recentReceipts.length})
+                      </div>
+                      <div className="divide-y divide-slate-200 text-[11px] flex-1">
+                        {recentReceipts.length === 0 ? (
+                          <p className="p-3 text-center text-slate-500">
+                            No payment receipts logged yet.
+                          </p>
+                        ) : (
+                          recentReceipts.map((p) => (
+                            <div
+                              key={p.id}
+                              className="px-3 py-1.5 flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0">
+                                <span className="font-mono font-bold text-emerald-800">
+                                  {p.receiptNo}
+                                </span>{' '}
+                                <span className="font-semibold text-slate-800">
+                                  · {p.monthLabel}
+                                </span>
+                                <span className="block text-[10px] text-slate-500">
+                                  {p.date} (Paid in {p.paidInMonth || formatMonthYearFromDate(p.date)}) · {p.mode}
+                                </span>
+                              </div>
+                              <span className="font-mono font-bold text-slate-900 shrink-0">
+                                ₹{p.amount}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Remarks, Promotion Summary & Official Signatures */}
+                  <div className="p-3 rounded-xl border border-slate-300 bg-slate-50 text-[11px] text-slate-700 flex flex-wrap items-center justify-between gap-2 print-avoid-break">
+                    <div>
+                      <strong>Academic &amp; Promotion Status:</strong>{' '}
+                      {student.promotedFromClass
+                        ? `Promoted from ${student.promotedFromClass} on ${
+                            student.lastPromotionDate || '—'
+                          } to ${student.classLevel}.`
+                        : `Enrolled directly in ${student.classLevel} (${student.academicSession || '2026-27'}).`}
+                    </div>
+                    <span className="font-mono text-[10px] text-slate-500">
+                      Generated: {exportedTimestamp}
+                    </span>
+                  </div>
+
+                  <div className="pt-5 border-t border-slate-300 flex flex-wrap items-end justify-between gap-4 print-avoid-break">
+                    <div className="text-[10px] text-slate-600 space-y-0.5">
+                      <p className="font-bold text-emerald-800">
+                        Certified Student Report Card Summary · {instituteConfig.name}
+                      </p>
+                      <p>Study Centre: {centreObj?.name} · Helpline: {instituteConfig.phoneDisplay}</p>
+                    </div>
+
+                    <div className="flex items-end gap-8">
+                      <div className="text-center">
+                        <div className="w-32 border-b border-slate-400 pb-4 mb-1" />
+                        <p className="text-[10px] font-bold text-slate-700">
+                          Parent / Guardian Signature
                         </p>
                       </div>
                       <div className="text-center">

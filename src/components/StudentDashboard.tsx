@@ -39,7 +39,8 @@ import {
   Trash2,
   Clock,
   Wallet,
-  Receipt
+  Receipt,
+  ClipboardCheck
 } from 'lucide-react';
 import {
   PdfExportRequest,
@@ -1466,6 +1467,22 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                                   <span>Ledger PDF</span>
                                 </button>
                               )}
+                              {onOpenPdfExport && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onOpenPdfExport({
+                                      type: 'student-report-card',
+                                      studentId: stu.id
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-900 font-bold text-[11px] border border-sky-200 inline-flex items-center gap-1 cursor-pointer"
+                                  title="Generate Printable Student Report Card (Attendance % & Dues Cleared)"
+                                >
+                                  <ClipboardCheck className="w-3 h-3" />
+                                  <span>Report Card</span>
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => inspectStudentInTab(stu, 'promotion')}
@@ -1569,19 +1586,34 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   </div>
 
                   {onOpenPdfExport && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onOpenPdfExport({
-                          type: 'student-ledger',
-                          studentId: activeStudent.id
-                        })
-                      }
-                      className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
-                    >
-                      <Printer className="w-3.5 h-3.5 text-amber-300" />
-                      <span>Export Ledger Card (PDF)</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenPdfExport({
+                            type: 'student-ledger',
+                            studentId: activeStudent.id
+                          })
+                        }
+                        className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5 text-amber-300" />
+                        <span>Export Ledger Card (PDF)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenPdfExport({
+                            type: 'student-report-card',
+                            studentId: activeStudent.id
+                          })
+                        }
+                        className="px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                      >
+                        <ClipboardCheck className="w-3.5 h-3.5 text-emerald-200" />
+                        <span>Student Report Card</span>
+                      </button>
+                    </>
                   )}
                 </div>
               </div>

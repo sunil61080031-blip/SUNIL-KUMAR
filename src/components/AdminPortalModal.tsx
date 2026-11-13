@@ -41,7 +41,8 @@ import {
   Clock,
   RefreshCw,
   ShieldAlert,
-  Shield
+  Shield,
+  Cloud
 } from 'lucide-react';
 import {
   DEFAULT_ADMIN_PASSWORD,
@@ -50,6 +51,13 @@ import {
   maskEmail,
   maskPhone
 } from '../utils/securityHelpers';
+import { CloudUserInfo, DataSyncBackupTab } from './DataSyncBackupTab';
+import {
+  AppDataBundle,
+  CloudBackupEntry,
+  CloudWorkspaceMeta,
+  RestoreScopeSelection
+} from '../utils/backupSyncHelpers';
 
 export type AdminTabType =
   | 'branding'
@@ -57,7 +65,8 @@ export type AdminTabType =
   | 'staff'
   | 'batches'
   | 'notices'
-  | 'security';
+  | 'security'
+  | 'backup-sync';
 
 interface AdminPortalModalProps {
   isOpen: boolean;
@@ -108,6 +117,29 @@ interface AdminPortalModalProps {
   onUpdateInquiryStatus: (id: string, status: InquiryItem['status']) => void;
   onResetData: () => void;
   initialTab?: AdminTabType;
+  dataBundle: AppDataBundle;
+  cloudUser: CloudUserInfo | null;
+  cloudSyncState: 'idle' | 'syncing' | 'synced' | 'error' | 'offline';
+  cloudSyncError: string | null;
+  autoCloudSync: boolean;
+  onToggleAutoCloudSync: (enabled: boolean) => void;
+  lastSyncedMeta: CloudWorkspaceMeta | null;
+  cloudRemoteMeta: CloudWorkspaceMeta | null;
+  cloudBackups: CloudBackupEntry[];
+  isCloudLoading: boolean;
+  onSignInGoogle: () => Promise<void>;
+  onSignOutGoogle: () => Promise<void>;
+  onPushToCloud: () => Promise<void>;
+  onPullFromCloud: () => Promise<void>;
+  onCreateCloudBackup: (label: string) => Promise<void>;
+  onRestoreCloudBackup: (backupId: string, label: string) => Promise<void>;
+  onDeleteCloudBackup: (backupId: string) => Promise<void>;
+  onRefreshCloudState: () => Promise<void>;
+  onApplyRestoreBundle: (
+    data: AppDataBundle,
+    scope: RestoreScopeSelection,
+    sourceLabel: string
+  ) => void;
 }
 
 export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
@@ -151,7 +183,26 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   onTogglePinNotice,
   onPreviewNotice,
   onResetData,
-  initialTab = 'branding'
+  initialTab = 'branding',
+  dataBundle,
+  cloudUser,
+  cloudSyncState,
+  cloudSyncError,
+  autoCloudSync,
+  onToggleAutoCloudSync,
+  lastSyncedMeta,
+  cloudRemoteMeta,
+  cloudBackups,
+  isCloudLoading,
+  onSignInGoogle,
+  onSignOutGoogle,
+  onPushToCloud,
+  onPullFromCloud,
+  onCreateCloudBackup,
+  onRestoreCloudBackup,
+  onDeleteCloudBackup,
+  onRefreshCloudState,
+  onApplyRestoreBundle
 }) => {
   const [passwordInput, setPasswordInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -1200,6 +1251,18 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 >
                   <KeyRound className="w-3.5 h-3.5" />
                   <span>6. Security (Password & OTP)</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('backup-sync')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    activeTab === 'backup-sync'
+                      ? 'bg-emerald-800 text-white shadow-xs'
+                      : 'bg-white text-emerald-800 border border-emerald-200 hover:bg-emerald-50'
+                  }`}
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>7. Data Sync, Backup & Restore</span>
                 </button>
               </div>
 
@@ -2931,6 +2994,32 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                     </div>
                   </div>
                 </div>
+              )}
+
+              {/* TAB 7: ONLINE DATA SYNC, CLOUD RESTORE POINTS & LOCAL BACKUP / RESTORE */}
+              {activeTab === 'backup-sync' && (
+                <DataSyncBackupTab
+                  bundle={dataBundle}
+                  cloudUser={cloudUser}
+                  cloudSyncState={cloudSyncState}
+                  cloudSyncError={cloudSyncError}
+                  autoCloudSync={autoCloudSync}
+                  onToggleAutoCloudSync={onToggleAutoCloudSync}
+                  lastSyncedMeta={lastSyncedMeta}
+                  cloudRemoteMeta={cloudRemoteMeta}
+                  cloudBackups={cloudBackups}
+                  isCloudLoading={isCloudLoading}
+                  onSignInGoogle={onSignInGoogle}
+                  onSignOutGoogle={onSignOutGoogle}
+                  onPushToCloud={onPushToCloud}
+                  onPullFromCloud={onPullFromCloud}
+                  onCreateCloudBackup={onCreateCloudBackup}
+                  onRestoreCloudBackup={onRestoreCloudBackup}
+                  onDeleteCloudBackup={onDeleteCloudBackup}
+                  onRefreshCloudState={onRefreshCloudState}
+                  onApplyRestoreBundle={onApplyRestoreBundle}
+                  onShowToast={showToast}
+                />
               )}
             </div>
           </div>

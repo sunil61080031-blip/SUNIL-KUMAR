@@ -25,7 +25,8 @@ import {
   Users,
   FileSpreadsheet,
   Printer,
-  FileText
+  FileText,
+  ClipboardCheck
 } from 'lucide-react';
 import { PdfExportRequest } from '../utils/ledgerHelpers';
 
@@ -937,6 +938,22 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                               >
                                 <FileText className="w-3 h-3" />
                                 <span>Ledger PDF</span>
+                              </button>
+                            )}
+                            {onOpenPdfExport && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenPdfExport({
+                                    type: 'student-report-card',
+                                    studentId: stu.id
+                                  })
+                                }
+                                className="px-2 py-1 bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-200 rounded-md text-[11px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Generate Printable Student Report Card Summary"
+                              >
+                                <ClipboardCheck className="w-3 h-3" />
+                                <span>Report Card</span>
                               </button>
                             )}
                             {stu.enrollmentStatus === 'Disenrolled' ? (

@@ -1,0 +1,311 @@
+{
+  "entities": {
+    "WorkspaceSnapshot": {
+      "title": "WorkspaceSnapshot",
+      "description": "Synced coaching institute configuration, batches, staff, fee plans, notices, inquiries, reminders, and security metadata.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the workspace owner."
+        },
+        "syncedByEmail": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Verified email of the Google account performing sync."
+        },
+        "schemaVersion": {
+          "type": "number",
+          "description": "Backup and sync payload format version."
+        },
+        "studentCount": {
+          "type": "number",
+          "description": "Count of synced student records."
+        },
+        "batchCount": {
+          "type": "number",
+          "description": "Count of active and inactive batches."
+        },
+        "deviceLabel": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Human-readable client label for last sync."
+        },
+        "instituteConfig": {
+          "type": "object",
+          "description": "Institute branding, timings, capacity, and study centres."
+        },
+        "staffList": {
+          "type": "array",
+          "description": "Bounded list of assigned faculty and staff members."
+        },
+        "batches": {
+          "type": "array",
+          "description": "Bounded list of scheduled class batches."
+        },
+        "feePlans": {
+          "type": "array",
+          "description": "Bounded list of class-wise fee schedules."
+        },
+        "notices": {
+          "type": "array",
+          "description": "Bounded list of official notice board items."
+        },
+        "inquiries": {
+          "type": "array",
+          "description": "Bounded list of parent admission inquiries."
+        },
+        "securityConfig": {
+          "type": "object",
+          "description": "Institute portal password and OTP security configuration."
+        },
+        "securityLogs": {
+          "type": "array",
+          "description": "Bounded list of recent security audit log entries."
+        },
+        "feeReminderSettings": {
+          "type": "object",
+          "description": "Automated WhatsApp and in-app fee deadline reminder settings."
+        },
+        "feeReminders": {
+          "type": "array",
+          "description": "Bounded list of dispatched fee reminder log items."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp."
+        }
+      },
+      "required": [
+        "ownerUid",
+        "syncedByEmail",
+        "schemaVersion",
+        "studentCount",
+        "batchCount",
+        "deviceLabel",
+        "instituteConfig",
+        "staffList",
+        "batches",
+        "feePlans",
+        "notices",
+        "inquiries",
+        "securityConfig",
+        "securityLogs",
+        "feeReminderSettings",
+        "feeReminders",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SyncedStudent": {
+      "title": "SyncedStudent",
+      "description": "Individual student record synced as an isolated document to avoid 1MB document limits.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the workspace owner."
+        },
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Student record unique identifier."
+        },
+        "studentIdCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Official student ID code."
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Student full name."
+        },
+        "record": {
+          "type": "object",
+          "description": "Complete native map of StudentRecord including feePayments and attendanceRecords."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp."
+        }
+      },
+      "required": [
+        "ownerUid",
+        "studentId",
+        "studentIdCode",
+        "studentName",
+        "record",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CloudBackupMetadata": {
+      "title": "CloudBackupMetadata",
+      "description": "Named cloud backup restore point containing workspace configuration and metadata.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the backup owner."
+        },
+        "backupId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique backup document ID."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "User-facing restore point label."
+        },
+        "createdByEmail": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Verified email of user who created backup."
+        },
+        "formatVersion": {
+          "type": "number",
+          "description": "Backup schema version."
+        },
+        "instituteName": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Institute name at time of backup."
+        },
+        "studentCount": {
+          "type": "number",
+          "description": "Number of student records in backup."
+        },
+        "batchCount": {
+          "type": "number",
+          "description": "Number of batches in backup."
+        },
+        "totalCollected": {
+          "type": "number",
+          "description": "Total fee collected snapshot."
+        },
+        "workspaceData": {
+          "type": "object",
+          "description": "Native map holding instituteConfig, staffList, batches, feePlans, notices, inquiries, securityConfig, securityLogs, feeReminderSettings, and feeReminders."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": [
+        "ownerUid",
+        "backupId",
+        "label",
+        "createdByEmail",
+        "formatVersion",
+        "instituteName",
+        "studentCount",
+        "batchCount",
+        "totalCollected",
+        "workspaceData",
+        "createdAt"
+      ]
+    },
+    "CloudBackupStudent": {
+      "title": "CloudBackupStudent",
+      "description": "Immutable student snapshot belonging to a parent CloudBackupMetadata document.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the backup owner."
+        },
+        "backupId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent backup ID."
+        },
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Student record identifier."
+        },
+        "record": {
+          "type": "object",
+          "description": "Complete native map snapshot of the StudentRecord."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": [
+        "ownerUid",
+        "backupId",
+        "studentId",
+        "record",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/workspaces/{workspaceId}": {
+      "schema": {
+        "$ref": "#/entities/WorkspaceSnapshot"
+      },
+      "description": "Owner-isolated live synced coaching workspace document."
+    },
+    "/users/{userId}/students/{studentId}": {
+      "schema": {
+        "$ref": "#/entities/SyncedStudent"
+      },
+      "description": "Owner-isolated live synced student ledger and attendance records."
+    },
+    "/users/{userId}/backups/{backupId}": {
+      "schema": {
+        "$ref": "#/entities/CloudBackupMetadata"
+      },
+      "description": "Owner-isolated cloud backup restore points."
+    },
+    "/users/{userId}/backups/{backupId}/students/{studentId}": {
+      "schema": {
+        "$ref": "#/entities/CloudBackupStudent"
+      },
+      "description": "Student records archived inside a specific cloud backup restore point."
+    }
+  }
+}

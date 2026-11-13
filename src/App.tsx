@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import { auth, googleProvider } from './firebase';
 import {
   NoticeItem,
   InquiryItem,
@@ -27,12 +29,25 @@ import {
   hashSecret,
   verifySecret
 } from './utils/securityHelpers';
-import { computeStudentFinancials } from './utils/ledgerHelpers';
+import { computeStudentFinancials, PdfExportRequest } from './utils/ledgerHelpers';
 import {
   DEFAULT_FEE_REMINDER_SETTINGS,
   computeDaysPastDeadline,
   buildFeeReminderMessage
 } from './utils/reminderHelpers';
+import {
+  AppDataBundle,
+  CloudBackupEntry,
+  CloudWorkspaceMeta,
+  createCloudBackupSnapshot,
+  deleteCloudBackupSnapshot,
+  fetchCloudWorkspaceMeta,
+  listCloudBackups,
+  pullWorkspaceFromCloud,
+  pushWorkspaceToCloud,
+  restoreCloudBackupSnapshot,
+  RestoreScopeSelection
+} from './utils/backupSyncHelpers';
 import {
   INITIAL_NOTICES,
   INITIAL_BATCHES,
@@ -54,7 +69,7 @@ import { Footer } from './components/Footer';
 import { PrintNoticeModal } from './components/PrintNoticeModal';
 import { PrintPdfExportModal } from './components/PrintPdfExportModal';
 import { AdminPortalModal, AdminTabType } from './components/AdminPortalModal';
-import { PdfExportRequest } from './utils/ledgerHelpers';
+import { CloudUserInfo } from './components/DataSyncBackupTab';
 import {
   Building2,
   GraduationCap,
@@ -63,7 +78,8 @@ import {
   Calculator,
   Bell,
   Layers,
-  LayoutDashboard
+  LayoutDashboard,
+  Cloud
 } from 'lucide-react';
 
 const INSTITUTE_CONFIG_KEY = 'sntc_institute_config_v5';
@@ -78,6 +94,7 @@ const SECURITY_CONFIG_KEY = 'sntc_security_config_v1';
 const SECURITY_LOGS_KEY = 'sntc_security_logs_v1';
 const REMINDER_SETTINGS_KEY = 'sntc_reminder_settings_v1';
 const REMINDER_LOGS_KEY = 'sntc_fee_reminders_v1';
+const AUTO_CLOUD_SYNC_KEY = 'sntc_auto_cloud_sync_v1';
 
 export default function App() {
   // 1. State: Institute Configuration & Multi-Study Centres
@@ -229,6 +246,54 @@ export default function App() {
   );
   const [enrollmentDiscountType, setEnrollmentDiscountType] = useState<FeeDiscountType>('None');
   const [enrollmentIsCharity, setEnrollmentIsCharity] = useState<boolean>(false);
+
+  // Cloud Sync & Backup State
+  const [cloudUser, setCloudUser] = useState<CloudUserInfo | null>(null);
+  const [cloudSyncState, setCloudSyncState] = useState<
+    'idle' | 'syncing' | 'synced' | 'error' | 'offline'
+  >('idle');
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const [autoCloudSync, setAutoCloudSync] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(AUTO_CLOUD_SYNC_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [lastSyncedMeta, setLastSyncedMeta] = useState<CloudWorkspaceMeta | null>(null);
+  const [cloudRemoteMeta, setCloudRemoteMeta] = useState<CloudWorkspaceMeta | null>(null);
+  const [cloudBackups, setCloudBackups] = useState<CloudBackupEntry[]>([]);
+  const [isCloudLoading, setIsCloudLoading] = useState(false);
+  const skipNextAutoSyncRef = useRef(false);
+
+  const currentDataBundle: AppDataBundle = useMemo(
+    () => ({
+      instituteConfig,
+      staffList,
+      batches,
+      feePlans,
+      students,
+      notices,
+      inquiries,
+      securityConfig,
+      securityLogs,
+      feeReminderSettings,
+      feeReminders
+    }),
+    [
+      instituteConfig,
+      staffList,
+      batches,
+      feePlans,
+      students,
+      notices,
+      inquiries,
+      securityConfig,
+      securityLogs,
+      feeReminderSettings,
+      feeReminders
+    ]
+  );
 
   // Sync states to localStorage
   useEffect(() => {
@@ -1014,6 +1079,304 @@ export default function App() {
     localStorage.removeItem(INQUIRIES_STORAGE_KEY);
   };
 
+  // Persist Auto-Sync preference
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_CLOUD_SYNC_KEY, autoCloudSync ? 'true' : 'false');
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [autoCloudSync]);
+
+  const refreshCloudMetadata = useCallback(async (uid: string) => {
+    setIsCloudLoading(true);
+    setCloudSyncError(null);
+    try {
+      const [meta, backups] = await Promise.all([
+        fetchCloudWorkspaceMeta(uid),
+        listCloudBackups(uid)
+      ]);
+      setCloudRemoteMeta(meta);
+      setCloudBackups(backups);
+      if (meta) {
+        setCloudSyncState((prev) => (prev === 'syncing' ? prev : 'synced'));
+      }
+    } catch (err) {
+      setCloudSyncState('error');
+      setCloudSyncError(
+        err instanceof Error ? err.message : 'Unable to fetch cloud sync metadata.'
+      );
+    } finally {
+      setIsCloudLoading(false);
+    }
+  }, []);
+
+  // Firebase Auth listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        const info: CloudUserInfo = {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+          emailVerified: user.emailVerified
+        };
+        setCloudUser(info);
+        refreshCloudMetadata(user.uid);
+      } else {
+        setCloudUser(null);
+        setCloudRemoteMeta(null);
+        setLastSyncedMeta(null);
+        setCloudBackups([]);
+        setCloudSyncState('idle');
+      }
+    });
+    return () => unsub();
+  }, [refreshCloudMetadata]);
+
+  const applyRestoredDataBundle = useCallback(
+    (
+      data: AppDataBundle,
+      scope: RestoreScopeSelection,
+      sourceLabel: string
+    ) => {
+      skipNextAutoSyncRef.current = true;
+      if (scope.instituteAndCentres && data.instituteConfig) {
+        setInstituteConfig(data.instituteConfig);
+      }
+      if (scope.studentsAndLedgers && Array.isArray(data.students)) {
+        setStudents(data.students);
+      }
+      if (scope.batchesAndFees) {
+        if (Array.isArray(data.batches)) setBatches(data.batches);
+        if (Array.isArray(data.feePlans) && data.feePlans.length > 0) {
+          setFeePlans(data.feePlans);
+        }
+      }
+      if (scope.staffAndNotices) {
+        if (Array.isArray(data.staffList)) setStaffList(data.staffList);
+        if (Array.isArray(data.notices)) setNotices(data.notices);
+        if (Array.isArray(data.inquiries)) setInquiries(data.inquiries);
+      }
+      if (scope.securityAndReminders) {
+        if (data.securityConfig) setSecurityConfig(data.securityConfig);
+        if (Array.isArray(data.securityLogs)) setSecurityLogs(data.securityLogs);
+        if (data.feeReminderSettings) {
+          setFeeReminderSettings(data.feeReminderSettings);
+        }
+        if (Array.isArray(data.feeReminders)) setFeeReminders(data.feeReminders);
+      }
+      addSecurityLog(
+        'Admin',
+        `Restored app data from ${sourceLabel}`,
+        'System',
+        'Success'
+      );
+    },
+    []
+  );
+
+  const handleCloudSignInGoogle = async () => {
+    setIsCloudLoading(true);
+    setCloudSyncError(null);
+    try {
+      const cred = await signInWithPopup(auth, googleProvider);
+      addSecurityLog(
+        cred.user.email || 'Admin',
+        'Connected Google account for Online Cloud Sync',
+        'System',
+        'Success'
+      );
+    } catch (err) {
+      setCloudSyncError(
+        err instanceof Error
+          ? err.message
+          : 'Google sign-in popup was closed or blocked.'
+      );
+    } finally {
+      setIsCloudLoading(false);
+    }
+  };
+
+  const handleCloudSignOutGoogle = async () => {
+    setIsCloudLoading(true);
+    try {
+      await signOut(auth);
+      setAutoCloudSync(false);
+      addSecurityLog('Admin', 'Disconnected Google Cloud Sync', 'System', 'Reset');
+    } catch (err) {
+      setCloudSyncError(
+        err instanceof Error ? err.message : 'Could not sign out cleanly.'
+      );
+    } finally {
+      setIsCloudLoading(false);
+    }
+  };
+
+  const handlePushToCloud = useCallback(async () => {
+    if (!cloudUser) return;
+    setCloudSyncState('syncing');
+    setCloudSyncError(null);
+    try {
+      const meta = await pushWorkspaceToCloud(
+        cloudUser.uid,
+        cloudUser.email || 'admin',
+        currentDataBundle
+      );
+      setLastSyncedMeta(meta);
+      setCloudRemoteMeta(meta);
+      setCloudSyncState('synced');
+      addSecurityLog(
+        cloudUser.email || 'Admin',
+        `Pushed workspace sync (${meta.studentCount} students) to Cloud`,
+        'System',
+        'Success'
+      );
+    } catch (err) {
+      setCloudSyncState('error');
+      setCloudSyncError(
+        err instanceof Error ? err.message : 'Failed to push data to cloud.'
+      );
+    }
+  }, [cloudUser, currentDataBundle]);
+
+  const handlePullFromCloud = async () => {
+    if (!cloudUser) return;
+    setIsCloudLoading(true);
+    setCloudSyncState('syncing');
+    setCloudSyncError(null);
+    try {
+      const res = await pullWorkspaceFromCloud(cloudUser.uid);
+      if (!res) {
+        setCloudSyncError('No synced cloud workspace found for this account yet.');
+        setCloudSyncState('idle');
+        return;
+      }
+      applyRestoredDataBundle(
+        res.bundle,
+        {
+          instituteAndCentres: true,
+          studentsAndLedgers: true,
+          batchesAndFees: true,
+          staffAndNotices: true,
+          securityAndReminders: true
+        },
+        'Cloud Sync Workspace'
+      );
+      setLastSyncedMeta(res.meta);
+      setCloudRemoteMeta(res.meta);
+      setCloudSyncState('synced');
+    } catch (err) {
+      setCloudSyncState('error');
+      setCloudSyncError(
+        err instanceof Error ? err.message : 'Failed to pull data from cloud.'
+      );
+    } finally {
+      setIsCloudLoading(false);
+    }
+  };
+
+  const handleCreateCloudBackup = async (label: string) => {
+    if (!cloudUser) return;
+    setIsCloudLoading(true);
+    setCloudSyncError(null);
+    try {
+      const created = await createCloudBackupSnapshot(
+        cloudUser.uid,
+        cloudUser.email || 'admin',
+        label,
+        currentDataBundle
+      );
+      setCloudBackups((prev) => [created, ...prev]);
+      addSecurityLog(
+        cloudUser.email || 'Admin',
+        `Created Cloud Backup "${created.label}" (${created.studentCount} students)`,
+        'System',
+        'Success'
+      );
+    } catch (err) {
+      setCloudSyncError(
+        err instanceof Error ? err.message : 'Failed to create cloud backup.'
+      );
+    } finally {
+      setIsCloudLoading(false);
+    }
+  };
+
+  const handleRestoreCloudBackup = async (backupId: string, label: string) => {
+    if (!cloudUser) return;
+    setIsCloudLoading(true);
+    setCloudSyncError(null);
+    try {
+      const restored = await restoreCloudBackupSnapshot(cloudUser.uid, backupId);
+      applyRestoredDataBundle(
+        restored,
+        {
+          instituteAndCentres: true,
+          studentsAndLedgers: true,
+          batchesAndFees: true,
+          staffAndNotices: true,
+          securityAndReminders: true
+        },
+        `Cloud Backup (${label})`
+      );
+      setCloudSyncState('synced');
+    } catch (err) {
+      setCloudSyncError(
+        err instanceof Error ? err.message : 'Failed to restore cloud backup.'
+      );
+    } finally {
+      setIsCloudLoading(false);
+    }
+  };
+
+  const handleDeleteCloudBackup = async (backupId: string) => {
+    if (!cloudUser) return;
+    setIsCloudLoading(true);
+    setCloudSyncError(null);
+    try {
+      await deleteCloudBackupSnapshot(cloudUser.uid, backupId);
+      setCloudBackups((prev) => prev.filter((b) => b.backupId !== backupId));
+    } catch (err) {
+      setCloudSyncError(
+        err instanceof Error ? err.message : 'Failed to delete cloud backup.'
+      );
+    } finally {
+      setIsCloudLoading(false);
+    }
+  };
+
+  // Debounced background auto-sync when signed in & Auto-Sync enabled
+  useEffect(() => {
+    if (!cloudUser || !cloudUser.emailVerified || !autoCloudSync) return;
+    if (skipNextAutoSyncRef.current) {
+      skipNextAutoSyncRef.current = false;
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setCloudSyncState('syncing');
+      setCloudSyncError(null);
+      try {
+        const meta = await pushWorkspaceToCloud(
+          cloudUser.uid,
+          cloudUser.email || 'admin',
+          currentDataBundle
+        );
+        setLastSyncedMeta(meta);
+        setCloudRemoteMeta(meta);
+        setCloudSyncState('synced');
+      } catch (err) {
+        setCloudSyncState('error');
+        setCloudSyncError(
+          err instanceof Error ? err.message : 'Auto-sync to cloud failed.'
+        );
+      }
+    }, 2500);
+
+    return () => window.clearTimeout(timer);
+  }, [cloudUser, autoCloudSync, currentDataBundle]);
+
   // Navigation Helpers
   const navigateToSection = (section: MainSectionType) => {
     setActiveMainSection(section);
@@ -1061,6 +1424,8 @@ export default function App() {
         enrolledStudentCount={totalEnrolledCount}
         activeMainSection={activeMainSection}
         onSelectMainSection={navigateToSection}
+        cloudSyncState={cloudSyncState}
+        cloudUserEmail={cloudUser?.email || null}
       />
 
       {/* Workspace Section Switcher Bar (Organizes all sections + sub-sections to minimize scrolling) */}
@@ -1164,24 +1529,46 @@ export default function App() {
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() =>
-              navigateToSection(activeMainSection === 'all' ? 'home' : 'all')
-            }
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
-              activeMainSection === 'all'
-                ? 'bg-amber-500 text-slate-950'
-                : 'bg-slate-800 text-amber-300 hover:bg-slate-700 border border-slate-700'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>
-              {activeMainSection === 'all'
-                ? 'Switch to Focused Tab View'
-                : 'View All Sections'}
-            </span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => openAdminSuite('backup-sync')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border ${
+                cloudUser
+                  ? 'bg-emerald-900/80 text-emerald-200 border-emerald-600 hover:bg-emerald-800'
+                  : 'bg-slate-800 text-sky-300 border-slate-700 hover:bg-slate-700'
+              }`}
+              title="Open Online Cloud Sync, Backup & Restore"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              <span>
+                {cloudSyncState === 'syncing'
+                  ? 'Syncing...'
+                  : cloudUser
+                  ? 'Synced · Backup'
+                  : 'Sync & Backup'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                navigateToSection(activeMainSection === 'all' ? 'home' : 'all')
+              }
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'all'
+                  ? 'bg-amber-500 text-slate-950'
+                  : 'bg-slate-800 text-amber-300 hover:bg-slate-700 border border-slate-700'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>
+                {activeMainSection === 'all'
+                  ? 'Switch to Focused Tab View'
+                  : 'View All Sections'}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1382,6 +1769,27 @@ export default function App() {
         onUpdateInquiryStatus={handleUpdateInquiryStatus}
         onResetData={handleResetData}
         initialTab={adminInitialTab}
+        dataBundle={currentDataBundle}
+        cloudUser={cloudUser}
+        cloudSyncState={cloudSyncState}
+        cloudSyncError={cloudSyncError}
+        autoCloudSync={autoCloudSync}
+        onToggleAutoCloudSync={setAutoCloudSync}
+        lastSyncedMeta={lastSyncedMeta}
+        cloudRemoteMeta={cloudRemoteMeta}
+        cloudBackups={cloudBackups}
+        isCloudLoading={isCloudLoading}
+        onSignInGoogle={handleCloudSignInGoogle}
+        onSignOutGoogle={handleCloudSignOutGoogle}
+        onPushToCloud={handlePushToCloud}
+        onPullFromCloud={handlePullFromCloud}
+        onCreateCloudBackup={handleCreateCloudBackup}
+        onRestoreCloudBackup={handleRestoreCloudBackup}
+        onDeleteCloudBackup={handleDeleteCloudBackup}
+        onRefreshCloudState={async () => {
+          if (cloudUser) await refreshCloudMetadata(cloudUser.uid);
+        }}
+        onApplyRestoreBundle={applyRestoredDataBundle}
       />
     </div>
   );

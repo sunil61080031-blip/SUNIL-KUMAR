@@ -9,6 +9,10 @@ export type PdfExportRequest =
   | {
       type: 'student-ledger';
       studentId: string;
+    }
+  | {
+      type: 'student-report-card';
+      studentId: string;
     };
 
 export const SESSION_MONTHS = [
@@ -219,6 +223,60 @@ export function computeStudentFinancials(
     prevYearCleared,
     prevYearRemainingDue,
     totalCombinedPending
+  };
+}
+
+export interface StudentAttendanceSummary {
+  totalSessions: number;
+  presentCount: number;
+  lateCount: number;
+  absentCount: number;
+  leaveCount: number;
+  attendedCount: number;
+  attendancePercentage: number;
+  hasRecords: boolean;
+  standingLabel:
+    | 'Excellent Regularity'
+    | 'Good Attendance'
+    | 'Needs Improvement'
+    | 'No Sessions Logged';
+  recentLogs: NonNullable<StudentRecord['attendanceRecords']>;
+}
+
+export function computeStudentAttendanceSummary(
+  stu: StudentRecord
+): StudentAttendanceSummary {
+  const records = stu.attendanceRecords || [];
+  const totalSessions = records.length;
+  const presentCount = records.filter((r) => r.status === 'Present').length;
+  const lateCount = records.filter((r) => r.status === 'Late').length;
+  const absentCount = records.filter((r) => r.status === 'Absent').length;
+  const leaveCount = records.filter((r) => r.status === 'Authorized Leave').length;
+  const attendedCount = presentCount + lateCount;
+  const hasRecords = totalSessions > 0;
+  const attendancePercentage = hasRecords
+    ? Math.round((attendedCount / totalSessions) * 100)
+    : 0;
+
+  let standingLabel: StudentAttendanceSummary['standingLabel'] =
+    'No Sessions Logged';
+  if (hasRecords) {
+    if (attendancePercentage >= 85) standingLabel = 'Excellent Regularity';
+    else if (attendancePercentage >= 75) standingLabel = 'Good Attendance';
+    else standingLabel = 'Needs Improvement';
+  }
+
+  return {
+    totalSessions,
+    presentCount,
+    lateCount,
+    absentCount,
+    leaveCount,
+    attendedCount,
+    attendancePercentage,
+    hasRecords,
+    standingLabel,
+    recentLogs: records.slice(0, 6)
   };
 }
 

@@ -1875,24 +1875,43 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                           Tuition Fee & Receipt Ledger
                         </h4>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (onOpenPdfExport) {
-                            onOpenPdfExport({
-                              type: 'student-ledger',
-                              studentId: activeStudent.id
-                            });
-                          } else {
-                            window.print();
-                          }
-                        }}
-                        className="px-3 py-1.5 text-white bg-slate-900 hover:bg-slate-800 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                        title="Export Official Ledger Card (PDF)"
-                      >
-                        <Printer className="w-3.5 h-3.5 text-amber-300" />
-                        <span>Export Ledger PDF</span>
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onOpenPdfExport) {
+                              onOpenPdfExport({
+                                type: 'student-ledger',
+                                studentId: activeStudent.id
+                              });
+                            } else {
+                              window.print();
+                            }
+                          }}
+                          className="px-3 py-1.5 text-white bg-slate-900 hover:bg-slate-800 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="Export Official Ledger Card (PDF)"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-amber-300" />
+                          <span>Export Ledger PDF</span>
+                        </button>
+
+                        {onOpenPdfExport && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenPdfExport({
+                                type: 'student-report-card',
+                                studentId: activeStudent.id
+                              })
+                            }
+                            className="px-3 py-1.5 text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                            title="Generate Printable Student Report Card Summary"
+                          >
+                            <ClipboardCheck className="w-3.5 h-3.5 text-emerald-200" />
+                            <span>Report Card</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {paymentSuccessMsg && (

@@ -1,0 +1,228 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'sunil61080031@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidBoundedMapList(listVal, maxLen) {
+      return listVal is list &&
+        listVal.size() <= maxLen &&
+        (listVal.size() == 0 || listVal[0] is map);
+    }
+
+    function isValidWorkspace(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'syncedByEmail', 'schemaVersion', 'studentCount',
+          'batchCount', 'deviceLabel', 'instituteConfig', 'staffList',
+          'batches', 'feePlans', 'notices', 'inquiries', 'securityConfig',
+          'securityLogs', 'feeReminderSettings', 'feeReminders',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerUid', 'syncedByEmail', 'schemaVersion', 'studentCount',
+          'batchCount', 'deviceLabel', 'instituteConfig', 'staffList',
+          'batches', 'feePlans', 'notices', 'inquiries', 'securityConfig',
+          'securityLogs', 'feeReminderSettings', 'feeReminders',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        data.syncedByEmail is string && data.syncedByEmail.size() <= 160 &&
+        data.schemaVersion is number && data.schemaVersion >= 1 && data.schemaVersion <= 100 &&
+        data.studentCount is number && data.studentCount >= 0 && data.studentCount <= 2000 &&
+        data.batchCount is number && data.batchCount >= 0 && data.batchCount <= 500 &&
+        data.deviceLabel is string && data.deviceLabel.size() <= 120 &&
+        data.instituteConfig is map &&
+        isValidBoundedMapList(data.staffList, 300) &&
+        isValidBoundedMapList(data.batches, 300) &&
+        isValidBoundedMapList(data.feePlans, 100) &&
+        isValidBoundedMapList(data.notices, 500) &&
+        isValidBoundedMapList(data.inquiries, 500) &&
+        data.securityConfig is map &&
+        isValidBoundedMapList(data.securityLogs, 200) &&
+        data.feeReminderSettings is map &&
+        isValidBoundedMapList(data.feeReminders, 500) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSyncedStudent(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'studentId', 'studentIdCode', 'studentName',
+          'record', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerUid', 'studentId', 'studentIdCode', 'studentName',
+          'record', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isValidId(data.studentId) &&
+        data.studentIdCode is string && data.studentIdCode.size() >= 1 && data.studentIdCode.size() <= 64 &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 120 &&
+        data.record is map &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCloudBackup(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'backupId', 'label', 'createdByEmail',
+          'formatVersion', 'instituteName', 'studentCount',
+          'batchCount', 'totalCollected', 'workspaceData', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerUid', 'backupId', 'label', 'createdByEmail',
+          'formatVersion', 'instituteName', 'studentCount',
+          'batchCount', 'totalCollected', 'workspaceData', 'createdAt'
+        ]) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isValidId(data.backupId) &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 120 &&
+        data.createdByEmail is string && data.createdByEmail.size() <= 160 &&
+        data.formatVersion is number && data.formatVersion >= 1 && data.formatVersion <= 100 &&
+        data.instituteName is string && data.instituteName.size() <= 160 &&
+        data.studentCount is number && data.studentCount >= 0 && data.studentCount <= 2000 &&
+        data.batchCount is number && data.batchCount >= 0 && data.batchCount <= 500 &&
+        data.totalCollected is number && data.totalCollected >= 0 &&
+        data.workspaceData is map &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidBackupStudent(data, backupId) {
+      return data.keys().hasAll([
+          'ownerUid', 'backupId', 'studentId', 'record', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerUid', 'backupId', 'studentId', 'record', 'createdAt'
+        ]) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isValidId(data.backupId) &&
+        data.backupId == backupId &&
+        isValidId(data.studentId) &&
+        data.record is map &&
+        data.createdAt is timestamp;
+    }
+
+    // Bootstrapped admins lookup collection (read-only by owner)
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && isOwner(adminId);
+      allow list, create, update, delete: if false;
+    }
+
+    // Per-User Owner-Isolated Coaching Workspace & Cloud Backups
+    match /users/{userId} {
+      allow read, write: if false;
+
+      match /workspaces/{workspaceId} {
+        allow get: if isValidId(userId) && isValidId(workspaceId) && (isOwner(userId) || isAdmin());
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(workspaceId) &&
+          isOwner(userId) &&
+          isValidWorkspace(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(workspaceId) &&
+          isOwner(userId) &&
+          isValidWorkspace(incoming()) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'syncedByEmail', 'schemaVersion', 'studentCount', 'batchCount',
+            'deviceLabel', 'instituteConfig', 'staffList', 'batches',
+            'feePlans', 'notices', 'inquiries', 'securityConfig',
+            'securityLogs', 'feeReminderSettings', 'feeReminders', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(workspaceId) && isOwner(userId);
+      }
+
+      match /students/{studentId} {
+        allow get: if isValidId(userId) && isValidId(studentId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(studentId) &&
+          isOwner(userId) &&
+          isValidSyncedStudent(incoming()) &&
+          incoming().studentId == studentId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(studentId) &&
+          isOwner(userId) &&
+          isValidSyncedStudent(incoming()) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().studentId == existing().studentId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'studentIdCode', 'studentName', 'record', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(studentId) && isOwner(userId);
+      }
+
+      match /backups/{backupId} {
+        allow get: if isValidId(userId) && isValidId(backupId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(backupId) &&
+          isOwner(userId) &&
+          isValidCloudBackup(incoming()) &&
+          incoming().backupId == backupId &&
+          incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(userId) && isValidId(backupId) && isOwner(userId);
+
+        match /students/{studentId} {
+          allow get: if isValidId(userId) && isValidId(backupId) && isValidId(studentId) &&
+            isOwner(userId) &&
+            get(/databases/$(database)/documents/users/$(userId)/backups/$(backupId)).data.ownerUid == request.auth.uid;
+          allow list: if isOwner(userId) && existing().ownerUid == request.auth.uid;
+          allow create: if isValidId(userId) && isValidId(backupId) && isValidId(studentId) &&
+            isOwner(userId) &&
+            isValidBackupStudent(incoming(), backupId) &&
+            incoming().studentId == studentId &&
+            incoming().createdAt == request.time &&
+            existsAfter(/databases/$(database)/documents/users/$(userId)/backups/$(backupId)) &&
+            getAfter(/databases/$(database)/documents/users/$(userId)/backups/$(backupId)).data.ownerUid == request.auth.uid;
+          allow update: if false;
+          allow delete: if isValidId(userId) && isValidId(backupId) && isValidId(studentId) && isOwner(userId);
+        }
+      }
+    }
+  }
+}

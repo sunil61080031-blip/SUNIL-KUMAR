@@ -1,6 +1,16 @@
 import React, { useState } from 'react';
 import { InstituteConfig } from '../types';
-import { Menu, X, Lock, ShieldCheck, GraduationCap, Phone, Settings } from 'lucide-react';
+import {
+  Menu,
+  X,
+  Lock,
+  ShieldCheck,
+  GraduationCap,
+  Phone,
+  Settings,
+  Cloud,
+  CloudOff
+} from 'lucide-react';
 
 export type MainSectionType =
   | 'home'
@@ -16,13 +26,22 @@ interface NavbarProps {
   instituteConfig: InstituteConfig;
   isAdmin: boolean;
   onOpenAdmin: (
-    tab?: 'branding' | 'students' | 'staff' | 'batches' | 'notices' | 'security'
+    tab?:
+      | 'branding'
+      | 'students'
+      | 'staff'
+      | 'batches'
+      | 'notices'
+      | 'security'
+      | 'backup-sync'
   ) => void;
   onLogoutAdmin: () => void;
   noticeCount: number;
   enrolledStudentCount: number;
   activeMainSection?: MainSectionType;
   onSelectMainSection?: (section: MainSectionType) => void;
+  cloudSyncState?: 'idle' | 'syncing' | 'synced' | 'error' | 'offline';
+  cloudUserEmail?: string | null;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -33,7 +52,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   noticeCount,
   enrolledStudentCount,
   activeMainSection = 'home',
-  onSelectMainSection
+  onSelectMainSection,
+  cloudSyncState = 'idle',
+  cloudUserEmail = null
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -82,6 +103,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="text-sky-200 hover:text-white font-bold underline cursor-pointer"
               >
                 Security (Password / OTP)
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenAdmin('backup-sync')}
+                className="px-2 py-0.5 rounded bg-emerald-800 hover:bg-emerald-700 border border-emerald-500/60 text-emerald-100 font-bold flex items-center gap-1 cursor-pointer"
+              >
+                {cloudUserEmail ? (
+                  <Cloud className="w-3 h-3 text-emerald-300" />
+                ) : (
+                  <CloudOff className="w-3 h-3 text-amber-300" />
+                )}
+                <span>
+                  {cloudSyncState === 'syncing'
+                    ? 'Syncing...'
+                    : cloudUserEmail
+                    ? 'Cloud Synced'
+                    : 'Sync & Backup'}
+                </span>
               </button>
               <button
                 type="button"
