@@ -2,7 +2,11 @@ export type NoticeCategory = 'Urgent' | 'Exam' | 'Holiday' | 'Batch' | 'General'
 
 export type BatchShift = 'Morning Batch' | 'Afternoon Batch' | 'Evening Batch' | 'Night Class';
 
-export type EnrollmentStatus = 'Enrolled' | 'Disenrolled' | 'Re-enrolled';
+export type EnrollmentStatus =
+  | 'Enrolled'
+  | 'Disenrolled'
+  | 'Re-enrolled'
+  | 'Suspended';
 
 export type FeeDiscountType =
   | 'None'
@@ -119,6 +123,29 @@ export interface PaymentAdjustmentItem {
   type: 'prev-year' | 'back-due' | 'current-month' | 'next-month-advance';
 }
 
+export interface FeeReceiptBreakdown {
+  registrationFee: number;
+  tuitionFee: number;
+  hostelFee: number;
+  examinationFee: number;
+  otherCharges: number;
+  previousBackDues: number;
+  totalPayable: number;
+  previouslyPaid: number;
+  currentPayment: number;
+  remainingDues: number;
+}
+
+export interface PaymentAuditEntry {
+  id: string;
+  timestamp: string;
+  action: 'Created' | 'Edited' | 'Cancelled';
+  actor: string;
+  reason: string;
+  previousAmount?: number;
+  newAmount?: number;
+}
+
 export interface FeePaymentItem {
   id: string;
   receiptNo: string;
@@ -136,7 +163,12 @@ export interface FeePaymentItem {
   collectedBy?: string;
   remarks?: string;
   amount: number;
-  mode: 'Cash' | 'UPI / Online' | 'Charity Waiver';
+  mode: 'Cash' | 'UPI / Online' | 'Bank Transfer' | 'Charity Waiver';
+  transactionId?: string;
+  paymentStatus?: 'Paid' | 'Partially Paid' | 'Unpaid';
+  feeBreakdown?: FeeReceiptBreakdown;
+  status?: 'Active' | 'Cancelled';
+  auditHistory?: PaymentAuditEntry[];
 }
 
 export type AttendanceStatus = 'Present' | 'Absent' | 'Late' | 'Authorized Leave';
@@ -169,6 +201,9 @@ export interface StudentRecord {
   enrollmentDate: string;
   disenrollmentDate?: string;
   reEnrollmentDate?: string;
+  suspendedDate?: string;
+  suspensionReason?: string;
+  suspensionOverrideUntilCount?: number;
   enrollmentStatus: EnrollmentStatus;
   baseMonthlyFee: number;
   discountType: FeeDiscountType;
@@ -211,7 +246,15 @@ export interface SecurityLogItem {
   actor: string;
   event: string;
   method: 'Password' | 'OTP' | '2FA' | 'System';
-  status: 'Success' | 'Failed' | 'Reset';
+  status: 'Success' | 'Failed' | 'Reset' | 'Suspended';
+}
+
+export interface AutoSuspensionConfig {
+  enabled: boolean;
+  consecutiveMissedMonthsThreshold: number;
+  includePartialAsMissed: boolean;
+  autoReinstateOnPayment: boolean;
+  checkIntervalSeconds: number;
 }
 
 export type FeeReminderLanguage = 'Bilingual' | 'English' | 'Hindi';

@@ -1,4 +1,9 @@
-import { AcademicWing, FeePlan, StudentRecord } from '../types';
+import {
+  AcademicWing,
+  AutoSuspensionConfig,
+  FeePlan,
+  StudentRecord
+} from '../types';
 
 export type PdfExportRequest =
   | {
@@ -187,7 +192,11 @@ export function computeStudentFinancials(
 
   const fullYearSessionFee = stu.isCharitySeat ? 0 : regFee + stu.netMonthlyFee * 10;
 
-  const prevYearClearedFromReceipts = (stu.feePayments || []).reduce((acc, p) => {
+  const activePayments = (stu.feePayments || []).filter(
+    (p) => p.status !== 'Cancelled'
+  );
+
+  const prevYearClearedFromReceipts = activePayments.reduce((acc, p) => {
     if (typeof p.prevYearClearedPart === 'number') {
       return acc + p.prevYearClearedPart;
     }
@@ -322,8 +331,9 @@ export function buildMonthlyLedgerRows(
   const currentMonthKey = '2026-11';
   const nextBillingMonthKey = '2026-12';
 
-  // Build chronological credit queue from session receipts
+  // Build chronological credit queue from active (non-cancelled) session receipts
   const sessionReceiptsChrono = (stu.feePayments || [])
+    .filter((p) => p.status !== 'Cancelled')
     .map((p, idx) => {
       const sessionAmt =
         typeof p.sessionPaidPart === 'number'
@@ -634,3 +644,358 @@ export function previewSmartPaymentAllocation(
     remainingCombinedAfter: remainingPrevYearAfter + remainingSessionAfter
   };
 }
+
+export interface PaymentSlipCalculation {
+  selectedMonthKey: string;
+  selectedMonthLabel: string;
+  registrationFee: number;
+  tuitionFee: number;
+  hostelFee: number;
+  examinationFee: number;
+  otherCharges: number;
+  previousBackDues: number;
+  totalPayable: number;
+  previouslyPaid: number;
+  currentPayment: number;
+  remainingDues: number;
+  paymentStatus: 'Paid' | 'Partially Paid' | 'Unpaid';
+}
+
+/**
+ * Computes synchronized Fee Payment Slip figures directly from the student's live ledger.
+ * Total Payable = Current Month Tuition + Registration Fee Due + Previous Back Dues + Extra Charges.
+ * Remaining Dues = max(0, Total Payable - Previously Paid - Current Payment).
+ */
+export function computePaymentSlipSnapshot(
+  stu: StudentRecord,
+  feePlans: FeePlan[],
+  selectedMonthLabel: string,
+  extraCharges: {
+    hostelFee?: number;
+    examinationFee?: number;
+    otherCharges?: number;
+  },
+  currentPaymentAmount: number
+): PaymentSlipCalculation {
+  const fin = computeStudentFinancials(stu, feePlans);
+  const rows = buildMonthlyLedgerRows(stu, feePlans);
+  const monthKey = getMonthKeyFromLabel(selectedMonthLabel) || '2026-11';
+  const targetRow = rows.find((r) => r.key === monthKey);
+
+  // Registration fee due if not yet covered by previous session payments
+  const registrationFee = stu.isCharitySeat
+    ? 0
+    : Math.max(0, fin.regFee - fin.currentSessionPaid);
+
+  const tuitionFee = stu.isCharitySeat
+    ? 0
+    : targetRow
+    ? targetRow.netPayable
+    : stu.netMonthlyFee;
+
+  // Previous unpaid months strictly before selected month + previous academic year pending dues
+  const priorMonthsUnpaid = rows
+    .filter(
+      (r) =>
+        r.key < monthKey &&
+        r.status !== 'Before Admission' &&
+        r.status !== 'Disenrolled Break' &&
+        r.status !== 'Waived'
+    )
+    .reduce((sum, r) => sum + r.remainingAmount, 0);
+
+  const previousBackDues = stu.isCharitySeat
+    ? 0
+    : priorMonthsUnpaid + fin.prevYearRemainingDue;
+
+  const hostelFee = Math.max(0, Math.round(extraCharges.hostelFee || 0));
+  const examinationFee = Math.max(0, Math.round(extraCharges.examinationFee || 0));
+  const otherCharges = Math.max(0, Math.round(extraCharges.otherCharges || 0));
+
+  const previouslyPaid = targetRow ? targetRow.paidAmount : 0;
+  const totalPayable =
+    registrationFee +
+    tuitionFee +
+    hostelFee +
+    examinationFee +
+    otherCharges +
+    previousBackDues;
+
+  const currentPayment = Math.max(0, Math.round(currentPaymentAmount || 0));
+  const remainingDues = Math.max(0, totalPayable - previouslyPaid - currentPayment);
+
+  let paymentStatus: 'Paid' | 'Partially Paid' | 'Unpaid' = 'Unpaid';
+  if (totalPayable === 0 || remainingDues === 0) {
+    paymentStatus = 'Paid';
+  } else if (previouslyPaid + currentPayment > 0) {
+    paymentStatus = 'Partially Paid';
+  } else {
+    paymentStatus = 'Unpaid';
+  }
+
+  return {
+    selectedMonthKey: monthKey,
+    selectedMonthLabel: targetRow?.label || selectedMonthLabel,
+    registrationFee,
+    tuitionFee,
+    hostelFee,
+    examinationFee,
+    otherCharges,
+    previousBackDues,
+    totalPayable,
+    previouslyPaid,
+    currentPayment,
+    remainingDues,
+    paymentStatus
+  };
+}
+
+/**
+ * Generates a guaranteed unique receipt number across all students' ledger history.
+ */
+export function generateUniqueReceiptNumber(
+  allStudents: StudentRecord[],
+  paymentDate: string
+): string {
+  const existing = new Set<string>();
+  for (const stu of allStudents) {
+    for (const p of stu.feePayments || []) {
+      if (p.receiptNo) existing.add(p.receiptNo.toUpperCase());
+    }
+  }
+  const ym = (paymentDate || new Date().toISOString().slice(0, 10))
+    .replace(/-/g, '')
+    .slice(0, 6);
+  let seq = existing.size + 1;
+  let candidate = `SNTC-${ym}-${String(seq).padStart(4, '0')}`;
+  while (existing.has(candidate.toUpperCase())) {
+    seq += 1;
+    candidate = `SNTC-${ym}-${String(seq).padStart(4, '0')}`;
+  }
+  return candidate;
+}
+
+/**
+ * Recomputes a student's paidAmount and previousYearClearedAmount from active receipts
+ * while preserving any opening seed balance that predated receipt logs.
+ */
+export function reconcileStudentPaidTotals(
+  stu: StudentRecord,
+  updatedPayments: NonNullable<StudentRecord['feePayments']>
+): { paidAmount: number; previousYearClearedAmount: number } {
+  const previousActiveSessionSum = (stu.feePayments || [])
+    .filter((p) => p.status !== 'Cancelled')
+    .reduce(
+      (sum, p) =>
+        sum +
+        (typeof p.sessionPaidPart === 'number'
+          ? p.sessionPaidPart
+          : p.isPreviousYearClearance || p.session === '2025-26'
+          ? 0
+          : p.amount),
+      0
+    );
+
+  const openingSessionBalance = Math.max(
+    0,
+    (stu.paidAmount || 0) - previousActiveSessionSum
+  );
+
+  const previousActivePrevSum = (stu.feePayments || [])
+    .filter((p) => p.status !== 'Cancelled')
+    .reduce(
+      (sum, p) =>
+        sum +
+        (typeof p.prevYearClearedPart === 'number'
+          ? p.prevYearClearedPart
+          : p.isPreviousYearClearance || p.session === '2025-26'
+          ? p.amount
+          : 0),
+      0
+    );
+
+  const openingPrevBalance = Math.max(
+    0,
+    (stu.previousYearClearedAmount || 0) - previousActivePrevSum
+  );
+
+  const nextSessionSum = updatedPayments
+    .filter((p) => p.status !== 'Cancelled')
+    .reduce(
+      (sum, p) =>
+        sum +
+        (typeof p.sessionPaidPart === 'number'
+          ? p.sessionPaidPart
+          : p.isPreviousYearClearance || p.session === '2025-26'
+          ? 0
+          : p.amount),
+      0
+    );
+
+  const nextPrevSum = updatedPayments
+    .filter((p) => p.status !== 'Cancelled')
+    .reduce(
+      (sum, p) =>
+        sum +
+        (typeof p.prevYearClearedPart === 'number'
+          ? p.prevYearClearedPart
+          : p.isPreviousYearClearance || p.session === '2025-26'
+          ? p.amount
+          : 0),
+      0
+    );
+
+  return {
+    paidAmount: Math.max(0, openingSessionBalance + nextSessionSum),
+    previousYearClearedAmount: Math.max(0, openingPrevBalance + nextPrevSum)
+  };
+}
+
+/**
+ * Converts a rupee integer into Indian English words (e.g., 1450 -> "Rupees One Thousand Four Hundred Fifty Only").
+ */
+export function numberToIndianWords(num: number): string {
+  const n = Math.max(0, Math.round(num));
+  if (n === 0) return 'Rupees Zero Only';
+
+  const ones = [
+    '',
+    'One',
+    'Two',
+    'Three',
+    'Four',
+    'Five',
+    'Six',
+    'Seven',
+    'Eight',
+    'Nine',
+    'Ten',
+    'Eleven',
+    'Twelve',
+    'Thirteen',
+    'Fourteen',
+    'Fifteen',
+    'Sixteen',
+    'Seventeen',
+    'Eighteen',
+    'Nineteen'
+  ];
+  const tens = [
+    '',
+    '',
+    'Twenty',
+    'Thirty',
+    'Forty',
+    'Fifty',
+    'Sixty',
+    'Seventy',
+    'Eighty',
+    'Ninety'
+  ];
+
+  const twoDigits = (x: number): string => {
+    if (x < 20) return ones[x];
+    const t = Math.floor(x / 10);
+    const o = x % 10;
+    return o > 0 ? `${tens[t]} ${ones[o]}` : tens[t];
+  };
+
+  const threeDigits = (x: number): string => {
+    const h = Math.floor(x / 100);
+    const rem = x % 100;
+    if (h > 0 && rem > 0) return `${ones[h]} Hundred ${twoDigits(rem)}`;
+    if (h > 0) return `${ones[h]} Hundred`;
+    return twoDigits(rem);
+  };
+
+  const parts: string[] = [];
+  const crore = Math.floor(n / 10000000);
+  const lakh = Math.floor((n % 10000000) / 100000);
+  const thousand = Math.floor((n % 100000) / 1000);
+  const rest = n % 1000;
+
+  if (crore > 0) parts.push(`${threeDigits(crore)} Crore`);
+  if (lakh > 0) parts.push(`${twoDigits(lakh)} Lakh`);
+  if (thousand > 0) parts.push(`${twoDigits(thousand)} Thousand`);
+  if (rest > 0) parts.push(threeDigits(rest));
+
+  return `Rupees ${parts.join(' ')} Only`;
+}
+
+export const DEFAULT_AUTO_SUSPENSION_CONFIG: AutoSuspensionConfig = {
+  enabled: true,
+  consecutiveMissedMonthsThreshold: 3,
+  includePartialAsMissed: false,
+  autoReinstateOnPayment: true,
+  checkIntervalSeconds: 15
+};
+
+export interface ConsecutiveMissedSummary {
+  consecutiveMissedMonths: number;
+  missedMonthLabels: string[];
+  totalMissedMonths: number;
+  isExempt: boolean;
+}
+
+/**
+ * Evaluates a student's live monthly ledger up through the current billing month
+ * to determine how many consecutive monthly fee payments have been missed.
+ */
+export function computeConsecutiveMissedMonths(
+  stu: StudentRecord,
+  feePlans: FeePlan[],
+  options?: {
+    includePartialAsMissed?: boolean;
+    referenceMonthKey?: string;
+  }
+): ConsecutiveMissedSummary {
+  if (stu.isCharitySeat || stu.netMonthlyFee <= 0 || stu.enrollmentStatus === 'Disenrolled') {
+    return {
+      consecutiveMissedMonths: 0,
+      missedMonthLabels: [],
+      totalMissedMonths: 0,
+      isExempt: true
+    };
+  }
+
+  const includePartial = Boolean(options?.includePartialAsMissed);
+  const referenceMonthKey = options?.referenceMonthKey || '2026-11';
+  const rows = buildMonthlyLedgerRows(stu, feePlans);
+
+  const billableElapsed = rows.filter(
+    (r) =>
+      r.key <= referenceMonthKey &&
+      r.status !== 'Before Admission' &&
+      r.status !== 'Disenrolled Break' &&
+      r.status !== 'Waived'
+  );
+
+  const isRowMissed = (status: MonthlyLedgerRow['status']) =>
+    status === 'Pending' || (includePartial && status === 'Partially Paid');
+
+  let totalMissedMonths = 0;
+  for (const row of billableElapsed) {
+    if (isRowMissed(row.status)) {
+      totalMissedMonths += 1;
+    }
+  }
+
+  // Count trailing consecutive missed monthly payments walking backward from latest elapsed month
+  const streakLabels: string[] = [];
+  for (let i = billableElapsed.length - 1; i >= 0; i -= 1) {
+    const row = billableElapsed[i];
+    if (isRowMissed(row.status)) {
+      streakLabels.unshift(row.label);
+    } else {
+      break;
+    }
+  }
+
+  return {
+    consecutiveMissedMonths: streakLabels.length,
+    missedMonthLabels: streakLabels,
+    totalMissedMonths,
+    isExempt: false
+  };
+}
+

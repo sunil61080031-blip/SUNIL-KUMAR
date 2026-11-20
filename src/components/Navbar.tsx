@@ -15,6 +15,7 @@ import {
 export type MainSectionType =
   | 'home'
   | 'student-dashboard'
+  | 'fee-slip'
   | 'student-portal'
   | 'batches'
   | 'fee-calculator'
@@ -42,6 +43,7 @@ interface NavbarProps {
   onSelectMainSection?: (section: MainSectionType) => void;
   cloudSyncState?: 'idle' | 'syncing' | 'synced' | 'error' | 'offline';
   cloudUserEmail?: string | null;
+  onSwitchLoginRole?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -54,7 +56,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeMainSection = 'home',
   onSelectMainSection,
   cloudSyncState = 'idle',
-  cloudUserEmail = null
+  cloudUserEmail = null,
+  onSwitchLoginRole
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -122,6 +125,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                     : 'Sync & Backup'}
                 </span>
               </button>
+              {onSwitchLoginRole && (
+                <button
+                  type="button"
+                  onClick={onSwitchLoginRole}
+                  className="text-cyan-200 hover:text-white font-semibold text-[11px] cursor-pointer"
+                >
+                  Switch Role
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onLogoutAdmin}
@@ -179,6 +191,17 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               Student Dashboard
+            </a>
+            <a
+              href="#fee-slip"
+              onClick={(e) => handleNavClick(e, 'fee-slip')}
+              className={`transition-colors whitespace-nowrap shrink-0 ${
+                activeMainSection === 'fee-slip'
+                  ? 'text-[#7a1426] underline underline-offset-4'
+                  : 'hover:text-[#7a1426]'
+              }`}
+            >
+              Fee Payment Slip
             </a>
             <a
               href="#student-portal"
@@ -288,6 +311,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             className="block py-2 px-3 rounded-md text-xs font-bold text-emerald-900 bg-emerald-100/80 hover:bg-emerald-200"
           >
             2. Class-Wise Student Dashboard (Primary / Secondary / High Class, Ledger & Promotion)
+          </a>
+          <a
+            href="#fee-slip"
+            onClick={(e) => handleNavClick(e, 'fee-slip')}
+            className="block py-2 px-3 rounded-md text-xs font-bold text-[#7a1426] bg-rose-50 hover:bg-rose-100"
+          >
+            3. Official Tuition Fee Payment Slip (A4 Receipt & Monthly Statement)
           </a>
           <a
             href="#student-portal"

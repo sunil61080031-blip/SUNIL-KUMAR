@@ -26,7 +26,9 @@ import {
   FileSpreadsheet,
   Printer,
   FileText,
-  ClipboardCheck
+  ClipboardCheck,
+  Pencil,
+  Save
 } from 'lucide-react';
 import { PdfExportRequest } from '../utils/ledgerHelpers';
 
@@ -75,10 +77,11 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
   const [subTab, setSubTab] = useState<AdmissionSubTab>('form');
 
   const [formMode, setFormMode] = useState<
-    'New Enrollment' | 'Re-enrollment' | 'Disenrollment Request'
+    'New Enrollment' | 'Edit Student' | 'Re-enrollment' | 'Disenrollment Request'
   >('New Enrollment');
   const [selectedExistingStudentId, setSelectedExistingStudentId] = useState<string>('');
 
+  const [studentIdCode, setStudentIdCode] = useState('');
   const [studentName, setStudentName] = useState('');
   const [parentName, setParentName] = useState('');
   const [phone, setPhone] = useState('');
@@ -90,7 +93,10 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
   );
   const [board, setBoard] = useState<'BSEB (Bihar Board)' | 'CBSE'>('BSEB (Bihar Board)');
   const [village, setVillage] = useState('');
+  const [academicSession, setAcademicSession] = useState('2026-27');
   const [enrollmentDate, setEnrollmentDate] = useState<string>(todayStr);
+  const [enrollmentStatus, setEnrollmentStatus] = useState<EnrollmentStatus>('Enrolled');
+  const [previousYearPendingFee, setPreviousYearPendingFee] = useState<number>(0);
   const [discountType, setDiscountType] = useState<FeeDiscountType>(initialDiscountType);
   const [charityReason, setCharityReason] = useState('');
   const [message, setMessage] = useState('');
@@ -145,19 +151,59 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
     Math.round(baseMonthlyFee * (1 - discountMeta.percent / 100))
   );
 
+  const populateFieldsFromStudent = (found: StudentRecord) => {
+    setStudentIdCode(found.studentIdCode);
+    setStudentName(found.studentName);
+    setParentName(found.parentName);
+    setPhone(found.phone);
+    setCentreId(found.centreId);
+    setSelectedBatchCode(found.batchCode);
+    setBoard(found.board);
+    setVillage(found.village);
+    setAcademicSession(found.academicSession || '2026-27');
+    setEnrollmentDate(found.enrollmentDate || todayStr);
+    setEnrollmentStatus(found.enrollmentStatus);
+    setPreviousYearPendingFee(found.previousYearPendingFee || 0);
+    setDiscountType(found.discountType);
+    setCharityReason(found.charityNote || '');
+    setMessage(found.notes || '');
+  };
+
   const handleSelectExistingStudent = (stuId: string) => {
     setSelectedExistingStudentId(stuId);
+    setErrorMsg('');
     const found = students.find((s) => s.id === stuId);
     if (found) {
-      setStudentName(found.studentName);
-      setParentName(found.parentName);
-      setPhone(found.phone);
-      setCentreId(found.centreId);
-      setSelectedBatchCode(found.batchCode);
-      setBoard(found.board);
-      setVillage(found.village);
-      setDiscountType(found.discountType);
+      populateFieldsFromStudent(found);
     }
+  };
+
+  const handleStartEditStudent = (stu: StudentRecord) => {
+    setSubmittedRecord(null);
+    setErrorMsg('');
+    setFormMode('Edit Student');
+    setSelectedExistingStudentId(stu.id);
+    populateFieldsFromStudent(stu);
+    setSubTab('form');
+  };
+
+  const handleResetToNewForm = () => {
+    setFormMode('New Enrollment');
+    setSelectedExistingStudentId('');
+    setStudentIdCode('');
+    setStudentName('');
+    setParentName('');
+    setPhone('');
+    setVillage('');
+    setAcademicSession('2026-27');
+    setEnrollmentDate(todayStr);
+    setEnrollmentStatus('Enrolled');
+    setPreviousYearPendingFee(0);
+    setDiscountType('None');
+    setCharityReason('');
+    setMessage('');
+    setErrorMsg('');
+    setSubmittedRecord(null);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -194,7 +240,66 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
 
     let updatedStudent: StudentRecord;
 
-    if (formMode === 'Disenrollment Request' && selectedExistingStudentId) {
+    if (formMode === 'Edit Student') {
+      if (!selectedExistingStudentId) {
+        setErrorMsg('Please select a registered student to edit.');
+        return;
+      }
+      const existing = students.find((s) => s.id === selectedExistingStudentId);
+      if (!existing) {
+        setErrorMsg('Selected student record could not be found.');
+        return;
+      }
+      const normalizedCode = (studentIdCode.trim() || existing.studentIdCode).toUpperCase();
+      const duplicateCode = students.some(
+        (s) => s.id !== existing.id && s.studentIdCode.toUpperCase() === normalizedCode
+      );
+      if (duplicateCode) {
+        setErrorMsg(`Student ID "${normalizedCode}" is already assigned to another student.`);
+        return;
+      }
+
+      updatedStudent = {
+        ...existing,
+        studentIdCode: normalizedCode,
+        studentName: studentName.trim(),
+        parentName: parentName.trim(),
+        phone: cleanPhone,
+        classLevel: currentBatch.classLevel,
+        classNum: currentBatch.classNum,
+        batchId: currentBatch.id,
+        batchCode: currentBatch.batchCode,
+        shift: currentBatch.shift,
+        centreId,
+        board,
+        village: village.trim() || activeCentre.location,
+        academicSession: academicSession.trim() || existing.academicSession || '2026-27',
+        enrollmentDate: enrollmentDate || existing.enrollmentDate,
+        enrollmentStatus,
+        disenrollmentDate:
+          enrollmentStatus === 'Disenrolled'
+            ? existing.disenrollmentDate || todayStr
+            : existing.disenrollmentDate,
+        reEnrollmentDate:
+          enrollmentStatus === 'Re-enrolled'
+            ? existing.reEnrollmentDate || todayStr
+            : existing.reEnrollmentDate,
+        baseMonthlyFee,
+        discountType,
+        discountPercent: discountMeta.percent,
+        isCharitySeat,
+        charityNote: isCharitySeat
+          ? charityReason.trim() || existing.charityNote || 'Charity Quota Applied'
+          : charityReason.trim() || undefined,
+        netMonthlyFee,
+        previousYearPendingFee: Math.max(0, Number(previousYearPendingFee) || 0),
+        notes: message.trim()
+      };
+
+      onAddOrUpdateStudent(updatedStudent);
+      setSubmittedRecord(updatedStudent);
+      return;
+    } else if (formMode === 'Disenrollment Request' && selectedExistingStudentId) {
       const existing = students.find((s) => s.id === selectedExistingStudentId);
       if (existing) {
         onDisenrollStudent(existing.id, enrollmentDate, message.trim());
@@ -243,6 +348,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
         centreId,
         board,
         village: village.trim() || activeCentre.location,
+        academicSession: '2026-27',
         enrollmentDate: formMode === 'New Enrollment' ? enrollmentDate : todayStr,
         reEnrollmentDate: formMode === 'Re-enrollment' ? enrollmentDate : undefined,
         enrollmentStatus: formMode === 'Re-enrollment' ? 'Re-enrolled' : 'Enrolled',
@@ -410,7 +516,9 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                   {submittedRecord.enrollmentStatus}
                 </span>
                 <h3 className="text-xl font-bold text-slate-900">
-                  {formMode} Recorded Successfully!
+                  {formMode === 'Edit Student'
+                    ? 'Student Details Updated Successfully!'
+                    : `${formMode} Recorded Successfully!`}
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-600 max-w-md mx-auto leading-relaxed">
                   Student <strong className="text-slate-900">{submittedRecord.studentName}</strong>{' '}
@@ -428,14 +536,25 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                 <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
                   <button
                     type="button"
-                    onClick={() => setSubmittedRecord(null)}
+                    onClick={() => {
+                      if (formMode === 'Edit Student') {
+                        setSubmittedRecord(null);
+                      } else {
+                        handleResetToNewForm();
+                      }
+                    }}
                     className="px-4 py-2 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors cursor-pointer"
                   >
-                    Process Another Student
+                    {formMode === 'Edit Student'
+                      ? 'Edit Another Student'
+                      : 'Process Another Student'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSubTab('register')}
+                    onClick={() => {
+                      setSubmittedRecord(null);
+                      setSubTab('register');
+                    }}
                     className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
                   >
                     View in Student Register
@@ -452,18 +571,19 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
-                {/* Mode Selector Tabs: New Enrollment | Re-enrollment | Disenrollment */}
+                {/* Mode Selector Tabs: New Enrollment | Edit Student (Admin) | Re-enrollment | Disenrollment */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                     Select Enrollment Action Type:
                   </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div
+                    className={`grid grid-cols-1 gap-2 ${
+                      isAdmin ? 'sm:grid-cols-4' : 'sm:grid-cols-3'
+                    }`}
+                  >
                     <button
                       type="button"
-                      onClick={() => {
-                        setFormMode('New Enrollment');
-                        setSelectedExistingStudentId('');
-                      }}
+                      onClick={handleResetToNewForm}
                       className={`py-2 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
                         formMode === 'New Enrollment'
                           ? 'bg-emerald-700 text-white border-emerald-700'
@@ -474,9 +594,30 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                       <span>New Enrollment</span>
                     </button>
 
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormMode('Edit Student');
+                          setErrorMsg('');
+                        }}
+                        className={`py-2 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
+                          formMode === 'Edit Student'
+                            ? 'bg-amber-600 text-white border-amber-600'
+                            : 'bg-amber-50/70 text-amber-900 border-amber-200 hover:bg-amber-100'
+                        }`}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        <span>Edit Student</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
-                      onClick={() => setFormMode('Re-enrollment')}
+                      onClick={() => {
+                        setFormMode('Re-enrollment');
+                        setErrorMsg('');
+                      }}
                       className={`py-2 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
                         formMode === 'Re-enrollment'
                           ? 'bg-indigo-700 text-white border-indigo-700'
@@ -489,7 +630,10 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setFormMode('Disenrollment Request')}
+                      onClick={() => {
+                        setFormMode('Disenrollment Request');
+                        setErrorMsg('');
+                      }}
                       className={`py-2 px-3.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
                         formMode === 'Disenrollment Request'
                           ? 'bg-rose-700 text-white border-rose-700'
@@ -510,15 +654,34 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                 )}
 
                 {formMode !== 'New Enrollment' && (
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
-                    <label className="text-xs font-bold text-slate-800 block">
-                      Select Registered Student for {formMode} *
-                    </label>
+                  <div
+                    className={`p-3 rounded-xl border space-y-2 ${
+                      formMode === 'Edit Student'
+                        ? 'bg-amber-50/80 border-amber-300'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="text-xs font-bold text-slate-800 block">
+                        Select Registered Student for {formMode} *
+                      </label>
+                      {formMode === 'Edit Student' && selectedExistingStudentId && (
+                        <button
+                          type="button"
+                          onClick={handleResetToNewForm}
+                          className="text-[11px] font-bold text-amber-900 hover:text-slate-900 underline cursor-pointer"
+                        >
+                          Cancel Edit
+                        </button>
+                      )}
+                    </div>
                     <select
-                      required={formMode === 'Disenrollment Request'}
+                      required={
+                        formMode === 'Disenrollment Request' || formMode === 'Edit Student'
+                      }
                       value={selectedExistingStudentId}
                       onChange={(e) => handleSelectExistingStudent(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                      className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg font-medium"
                     >
                       <option value="">-- Choose Student by ID / Name --</option>
                       {students.map((s) => (
@@ -528,6 +691,75 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                         </option>
                       ))}
                     </select>
+                    {formMode === 'Edit Student' && selectedExistingStudentId && (
+                      <p className="text-[11px] font-medium text-amber-900">
+                        Updating profile & admission fields automatically preserves all recorded fee receipts, attendance logs, promotion history, and portal password.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {formMode === 'Edit Student' && selectedExistingStudentId && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-3.5 bg-amber-50/40 rounded-xl border border-amber-200">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Student ID / Roll Code *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={studentIdCode}
+                        onChange={(e) => setStudentIdCode(e.target.value)}
+                        placeholder="e.g. STU-2026-001"
+                        className="w-full px-3 py-2 text-xs font-mono font-bold bg-white border border-amber-300 rounded-lg focus:outline-hidden focus:border-emerald-600"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Academic Session
+                      </label>
+                      <input
+                        type="text"
+                        value={academicSession}
+                        onChange={(e) => setAcademicSession(e.target.value)}
+                        placeholder="e.g. 2026-27"
+                        className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-emerald-600"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Enrollment Status
+                      </label>
+                      <select
+                        value={enrollmentStatus}
+                        onChange={(e) =>
+                          setEnrollmentStatus(e.target.value as EnrollmentStatus)
+                        }
+                        className="w-full px-3 py-2 text-xs font-semibold bg-white border border-slate-200 rounded-lg"
+                      >
+                        <option value="Enrolled">Enrolled</option>
+                        <option value="Re-enrolled">Re-enrolled</option>
+                        <option value="Suspended">Suspended</option>
+                        <option value="Disenrolled">Disenrolled</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Prev. Year Back Dues (₹)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={previousYearPendingFee}
+                        onChange={(e) =>
+                          setPreviousYearPendingFee(Math.max(0, Number(e.target.value) || 0))
+                        }
+                        className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-emerald-600"
+                      />
+                    </div>
                   </div>
                 )}
 
@@ -580,7 +812,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                     <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5 text-emerald-700" />
                       <span>
-                        {formMode === 'New Enrollment'
+                        {formMode === 'New Enrollment' || formMode === 'Edit Student'
                           ? 'Enrollment Date *'
                           : formMode === 'Re-enrollment'
                           ? 'Re-Enrollment Date *'
@@ -740,13 +972,21 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                         ? 'bg-rose-700 hover:bg-rose-800'
                         : formMode === 'Re-enrollment'
                         ? 'bg-indigo-700 hover:bg-indigo-800'
+                        : formMode === 'Edit Student'
+                        ? 'bg-amber-600 hover:bg-amber-700'
                         : 'bg-emerald-700 hover:bg-emerald-800'
                     }`}
                   >
-                    <Send className="w-3.5 h-3.5" />
+                    {formMode === 'Edit Student' ? (
+                      <Save className="w-3.5 h-3.5" />
+                    ) : (
+                      <Send className="w-3.5 h-3.5" />
+                    )}
                     <span>
                       {formMode === 'New Enrollment'
                         ? `Confirm Student Enrollment (₹${netMonthlyFee}/mo)`
+                        : formMode === 'Edit Student'
+                        ? `Save Student Details (₹${netMonthlyFee}/mo)`
                         : formMode === 'Re-enrollment'
                         ? 'Confirm Student Re-Enrollment'
                         : 'Record Student Disenrollment'}
@@ -773,7 +1013,7 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {(['All', 'Enrolled', 'Re-enrolled', 'Disenrolled', 'Charity'] as const).map(
+                {(['All', 'Enrolled', 'Re-enrolled', 'Suspended', 'Disenrolled', 'Charity'] as const).map(
                   (st) => (
                     <button
                       key={st}
@@ -883,6 +1123,11 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                           <div className="text-slate-700">
                             Enrolled: <strong>{stu.enrollmentDate}</strong>
                           </div>
+                          {stu.suspendedDate && (
+                            <div className="text-amber-700" title={stu.suspensionReason}>
+                              Suspended: <strong>{stu.suspendedDate}</strong>
+                            </div>
+                          )}
                           {stu.disenrollmentDate && (
                             <div className="text-rose-600">
                               Disenrolled: <strong>{stu.disenrollmentDate}</strong>
@@ -916,14 +1161,28 @@ export const WhatsAppInquiry: React.FC<WhatsAppInquiryProps> = ({
                                 ? 'bg-emerald-50 text-emerald-800'
                                 : stu.enrollmentStatus === 'Re-enrolled'
                                 ? 'bg-indigo-50 text-indigo-800'
+                                : stu.enrollmentStatus === 'Suspended'
+                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
                                 : 'bg-rose-50 text-rose-800'
                             }`}
+                            title={stu.suspensionReason}
                           >
                             {stu.enrollmentStatus}
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-right">
-                          <div className="inline-flex items-center gap-1.5">
+                          <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => handleStartEditStudent(stu)}
+                                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-md text-[11px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Edit Student Details"
+                              >
+                                <Pencil className="w-3 h-3" />
+                                <span>Edit</span>
+                              </button>
+                            )}
                             {onOpenPdfExport && (
                               <button
                                 type="button"

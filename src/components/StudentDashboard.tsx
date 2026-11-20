@@ -100,6 +100,7 @@ interface StudentDashboardProps {
   onDispatchFeeReminder: (reminder: FeeReminderLogItem) => void;
   onBulkDispatchReminders: (reminders: FeeReminderLogItem[]) => void;
   onClearFeeReminders: () => void;
+  onOpenFeeSlipForStudent?: (studentId: string) => void;
 }
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({
@@ -119,7 +120,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onBulkPromoteClass,
   onDisenrollStudent,
   onReEnrollStudent,
-  onOpenPdfExport
+  onOpenPdfExport,
+  onOpenFeeSlipForStudent
 }) => {
   // 1. Wing Filter (All / Primary Class / Secondary Class / High Class)
   const [selectedWing, setSelectedWing] = useState<AcademicWing>('All');
@@ -127,7 +129,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [selectedClassNum, setSelectedClassNum] = useState<number | 'all'>('all');
   // 3. Session Filter & Search
   const [selectedSession, setSelectedSession] = useState<string>('All');
-  const [statusFilter, setStatusFilter] = useState<'All' | 'Enrolled' | 'Re-enrolled' | 'Disenrolled'>('All');
+  const [statusFilter, setStatusFilter] = useState<
+    'All' | 'Enrolled' | 'Re-enrolled' | 'Suspended' | 'Disenrolled'
+  >('All');
   const [feeStatusFilter, setFeeStatusFilter] = useState<'All' | 'Overdue' | 'Cleared'>('All');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -1131,6 +1135,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               <option value="All">All Status</option>
               <option value="Enrolled">Enrolled</option>
               <option value="Re-enrolled">Re-enrolled</option>
+              <option value="Suspended">Suspended</option>
               <option value="Disenrolled">Disenrolled</option>
             </select>
 
@@ -1311,12 +1316,22 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                                       ? 'bg-emerald-100 text-emerald-800'
                                       : stu.enrollmentStatus === 'Re-enrolled'
                                       ? 'bg-blue-100 text-blue-800'
+                                      : stu.enrollmentStatus === 'Suspended'
+                                      ? 'bg-amber-100 text-amber-900 border border-amber-300'
                                       : 'bg-rose-100 text-rose-800'
                                   }`}
                                 >
                                   {stu.enrollmentStatus}
                                 </span>
                               </div>
+                              {stu.enrollmentStatus === 'Suspended' && (
+                                <p
+                                  className="text-[11px] font-semibold text-amber-800"
+                                  title={stu.suspensionReason}
+                                >
+                                  Suspended: {stu.suspendedDate || 'Auto-Policy'}
+                                </p>
+                              )}
                               {stu.disenrollmentDate ? (
                                 <p className="text-[11px] font-semibold text-rose-700">
                                   Disenrolled: {stu.disenrollmentDate}
@@ -1613,6 +1628,16 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                         <ClipboardCheck className="w-3.5 h-3.5 text-emerald-200" />
                         <span>Student Report Card</span>
                       </button>
+                      {onOpenFeeSlipForStudent && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenFeeSlipForStudent(activeStudent.id)}
+                          className="px-3.5 py-2 rounded-xl bg-[#7a1426] hover:bg-[#5e0f1d] text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                        >
+                          <Receipt className="w-3.5 h-3.5 text-amber-200" />
+                          <span>Official Fee Slip</span>
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

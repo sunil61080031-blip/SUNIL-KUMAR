@@ -12,8 +12,13 @@ import {
   StudentRecord,
   SecurityConfig,
   SecurityLogItem,
-  AuthSecurityMode
+  AuthSecurityMode,
+  FeeDiscountType,
+  EnrollmentStatus,
+  AutoSuspensionConfig
 } from '../types';
+import { computeConsecutiveMissedMonths } from '../utils/ledgerHelpers';
+import { DISCOUNT_OPTIONS } from '../data/seedData';
 import {
   X,
   Lock,
@@ -42,7 +47,9 @@ import {
   RefreshCw,
   ShieldAlert,
   Shield,
-  Cloud
+  Cloud,
+  Search,
+  Palette
 } from 'lucide-react';
 import {
   DEFAULT_ADMIN_PASSWORD,
@@ -58,6 +65,12 @@ import {
   CloudWorkspaceMeta,
   RestoreScopeSelection
 } from '../utils/backupSyncHelpers';
+import { ForgotPasswordModal } from './ForgotPasswordModal';
+import { DashboardThemeTab } from './DashboardThemeTab';
+import {
+  DashboardThemeConfig,
+  getDashboardThemePreset
+} from '../utils/dashboardTheme';
 
 export type AdminTabType =
   | 'branding'
@@ -66,7 +79,8 @@ export type AdminTabType =
   | 'batches'
   | 'notices'
   | 'security'
-  | 'backup-sync';
+  | 'backup-sync'
+  | 'theme';
 
 interface AdminPortalModalProps {
   isOpen: boolean;
@@ -101,6 +115,7 @@ interface AdminPortalModalProps {
   feePlans: FeePlan[];
   onUpdateFeePlan: (classNum: number, monthly: number, quarterly: number, reg: number) => void;
   students: StudentRecord[];
+  onUpdateStudent: (student: StudentRecord) => void;
   onDisenrollStudent: (id: string, date: string, reason?: string) => void;
   onReEnrollStudent: (id: string, date: string, batchCode?: string) => void;
   onDeleteStudent: (id: string) => void;
@@ -140,6 +155,12 @@ interface AdminPortalModalProps {
     scope: RestoreScopeSelection,
     sourceLabel: string
   ) => void;
+  dashboardTheme: DashboardThemeConfig;
+  onUpdateDashboardTheme: (next: DashboardThemeConfig) => void;
+  autoSuspensionConfig: AutoSuspensionConfig;
+  onUpdateAutoSuspensionConfig: (config: AutoSuspensionConfig) => void;
+  onRunAutoSuspensionScan: () => { suspendedCount: number; reinstatedCount: number };
+  onReinstateStudent: (studentId: string) => void;
 }
 
 export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
@@ -170,6 +191,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   feePlans,
   onUpdateFeePlan,
   students,
+  onUpdateStudent,
   onDisenrollStudent,
   onReEnrollStudent,
   onDeleteStudent,
@@ -202,8 +224,16 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   onRestoreCloudBackup,
   onDeleteCloudBackup,
   onRefreshCloudState,
-  onApplyRestoreBundle
+  onApplyRestoreBundle,
+  dashboardTheme,
+  onUpdateDashboardTheme,
+  autoSuspensionConfig,
+  onUpdateAutoSuspensionConfig,
+  onRunAutoSuspensionScan,
+  onReinstateStudent
 }) => {
+  const activeThemePreset = getDashboardThemePreset(dashboardTheme.themeId);
+  const [auditLogFilter, setAuditLogFilter] = useState<'all' | 'suspension' | 'security'>('all');
   const [passwordInput, setPasswordInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
@@ -220,9 +250,10 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   const [otpExpiresIn, setOtpExpiresIn] = useState(0);
   const [otpCooldown, setOtpCooldown] = useState(0);
 
-  // Forgot password reset via OTP
+  // Forgot password reset via OTP & Support Recovery Modal
   const [forgotNewPass, setForgotNewPass] = useState('');
   const [forgotConfirmPass, setForgotConfirmPass] = useState('');
+  const [showForgotSupportModal, setShowForgotSupportModal] = useState(false);
 
   // Security Settings Tab state
   const [secCurrentPass, setSecCurrentPass] = useState('');
@@ -296,6 +327,28 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   const [centreImage, setCentreImage] = useState(
     '/src/assets/images/hero_tuition_classroom_1793865164763.jpg'
   );
+
+  // 1b. Student Details Edit state (Tab 2: Students)
+  const [studentListSearch, setStudentListSearch] = useState('');
+  const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
+  const [stuEditError, setStuEditError] = useState('');
+  const [stuCode, setStuCode] = useState('');
+  const [stuName, setStuName] = useState('');
+  const [stuParentName, setStuParentName] = useState('');
+  const [stuPhone, setStuPhone] = useState('');
+  const [stuCentreId, setStuCentreId] = useState(
+    instituteConfig.studyCentres[0]?.id || 'centre-1'
+  );
+  const [stuBatchCode, setStuBatchCode] = useState(batches[0]?.batchCode || '');
+  const [stuBoard, setStuBoard] = useState<'BSEB (Bihar Board)' | 'CBSE'>('BSEB (Bihar Board)');
+  const [stuVillage, setStuVillage] = useState('');
+  const [stuSession, setStuSession] = useState('2026-27');
+  const [stuEnrollDate, setStuEnrollDate] = useState('');
+  const [stuStatus, setStuStatus] = useState<EnrollmentStatus>('Enrolled');
+  const [stuDiscountType, setStuDiscountType] = useState<FeeDiscountType>('None');
+  const [stuCharityNote, setStuCharityNote] = useState('');
+  const [stuPrevDues, setStuPrevDues] = useState<number>(0);
+  const [stuNotes, setStuNotes] = useState('');
 
   // 2. Staff Assignment form (Create or Edit)
   const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
@@ -759,6 +812,117 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     showToast('Official Notice Published!');
   };
 
+  const loadStudentIntoEditor = (stu: StudentRecord) => {
+    setEditingStudentId(stu.id);
+    setStuEditError('');
+    setStuCode(stu.studentIdCode);
+    setStuName(stu.studentName);
+    setStuParentName(stu.parentName);
+    setStuPhone(stu.phone);
+    setStuCentreId(stu.centreId);
+    setStuBatchCode(stu.batchCode);
+    setStuBoard(stu.board);
+    setStuVillage(stu.village);
+    setStuSession(stu.academicSession || '2026-27');
+    setStuEnrollDate(stu.enrollmentDate);
+    setStuStatus(stu.enrollmentStatus);
+    setStuDiscountType(stu.discountType);
+    setStuCharityNote(stu.charityNote || '');
+    setStuPrevDues(stu.previousYearPendingFee || 0);
+    setStuNotes(stu.notes || '');
+  };
+
+  const cancelStudentEdit = () => {
+    setEditingStudentId(null);
+    setStuEditError('');
+  };
+
+  const handleSaveStudentDetails = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStudentId) return;
+    setStuEditError('');
+
+    const existing = students.find((s) => s.id === editingStudentId);
+    if (!existing) return;
+
+    if (!stuName.trim() || !stuParentName.trim()) {
+      setStuEditError('Student name and guardian name are required.');
+      return;
+    }
+    const cleanPhone = stuPhone.replace(/\D/g, '');
+    if (cleanPhone.length < 10) {
+      setStuEditError('Please enter a valid 10-digit mobile number.');
+      return;
+    }
+
+    const normalizedCode = (stuCode.trim() || existing.studentIdCode).toUpperCase();
+    const duplicateCode = students.some(
+      (s) => s.id !== existing.id && s.studentIdCode.toUpperCase() === normalizedCode
+    );
+    if (duplicateCode) {
+      setStuEditError(`Student ID "${normalizedCode}" is already used by another student.`);
+      return;
+    }
+
+    const selectedBatch = batches.find((b) => b.batchCode === stuBatchCode) || batches[0];
+    const plan =
+      feePlans.find((fp) => fp.classNum === selectedBatch?.classNum) ||
+      feePlans.find((fp) => fp.classNum === existing.classNum) ||
+      feePlans[0];
+    const baseFee = plan ? plan.monthlyFee : existing.baseMonthlyFee;
+    const discMeta =
+      DISCOUNT_OPTIONS.find((d) => d.label === stuDiscountType) || DISCOUNT_OPTIONS[0];
+    const isCharity = Boolean(discMeta.isCharity);
+    const netFee = Math.max(0, Math.round(baseFee * (1 - discMeta.percent / 100)));
+
+    const updated: StudentRecord = {
+      ...existing,
+      studentIdCode: normalizedCode,
+      studentName: stuName.trim(),
+      parentName: stuParentName.trim(),
+      phone: cleanPhone,
+      classLevel: selectedBatch ? selectedBatch.classLevel : existing.classLevel,
+      classNum: selectedBatch ? selectedBatch.classNum : existing.classNum,
+      batchId: selectedBatch ? selectedBatch.id : existing.batchId,
+      batchCode: selectedBatch ? selectedBatch.batchCode : existing.batchCode,
+      shift: selectedBatch ? selectedBatch.shift : existing.shift,
+      centreId: stuCentreId,
+      board: stuBoard,
+      village: stuVillage.trim() || existing.village,
+      academicSession: stuSession.trim() || existing.academicSession || '2026-27',
+      enrollmentDate: stuEnrollDate || existing.enrollmentDate,
+      enrollmentStatus: stuStatus,
+      disenrollmentDate:
+        stuStatus === 'Disenrolled'
+          ? existing.disenrollmentDate || todayStr
+          : existing.disenrollmentDate,
+      reEnrollmentDate:
+        stuStatus === 'Re-enrolled'
+          ? existing.reEnrollmentDate || todayStr
+          : existing.reEnrollmentDate,
+      suspendedDate:
+        stuStatus === 'Suspended' ? existing.suspendedDate || todayStr : undefined,
+      suspensionReason:
+        stuStatus === 'Suspended'
+          ? existing.suspensionReason || 'Suspended by Administrator'
+          : undefined,
+      baseMonthlyFee: baseFee,
+      discountType: stuDiscountType,
+      discountPercent: discMeta.percent,
+      isCharitySeat: isCharity,
+      charityNote: isCharity
+        ? stuCharityNote.trim() || existing.charityNote || 'Charity Quota Applied'
+        : stuCharityNote.trim() || undefined,
+      netMonthlyFee: netFee,
+      previousYearPendingFee: Math.max(0, Number(stuPrevDues) || 0),
+      notes: stuNotes.trim()
+    };
+
+    onUpdateStudent(updated);
+    setEditingStudentId(null);
+    showToast(`Updated details for ${updated.studentName} (${updated.studentIdCode})`);
+  };
+
   const exportStudentsCSV = () => {
     if (students.length === 0) return;
     const headers = [
@@ -813,17 +977,26 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs overflow-y-auto no-print">
       <div className="relative w-full max-w-5xl bg-white rounded-2xl shadow-2xl overflow-hidden my-6 border border-slate-200 flex flex-col max-h-[92vh]">
         {/* Header */}
-        <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
+        <div
+          className="text-white px-6 py-4 flex items-center justify-between shrink-0 transition-colors duration-200"
+          style={{ backgroundColor: activeThemePreset.barBg }}
+        >
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center">
+            <div
+              className="w-8 h-8 rounded-lg text-white flex items-center justify-center"
+              style={{ backgroundColor: activeThemePreset.accentHex }}
+            >
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
               <h2 className="text-base font-bold text-white">
                 {instForm.name} — Admin Control Suite
               </h2>
-              <p className="text-[11px] text-emerald-300">
-                Institute Branding · Multi-Study Centres · 500-Student Register · Staff Roles · Edit Active Batch IDs
+              <p
+                className="text-[11px]"
+                style={{ color: activeThemePreset.barLabelText }}
+              >
+                Institute Branding · Multi-Study Centres · 500-Student Register · Staff Roles · Dashboard Theme
               </p>
             </div>
           </div>
@@ -1172,6 +1345,16 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                   </p>
                 </div>
               )}
+
+            <div className="pt-2 border-t border-slate-100 text-center">
+              <button
+                type="button"
+                onClick={() => setShowForgotSupportModal(true)}
+                className="inline-flex items-center justify-center min-h-[36px] px-2 text-xs font-bold text-emerald-800 hover:text-emerald-950 hover:underline underline-offset-4 transition-colors cursor-pointer"
+              >
+                Forgot Password? Contact Support Desk
+              </button>
+            </div>
           </div>
         ) : (
           /* Logged In: Full 5-Tab Management Suite */
@@ -1263,6 +1446,23 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 >
                   <Cloud className="w-3.5 h-3.5" />
                   <span>7. Data Sync, Backup & Restore</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('theme')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    activeTab === 'theme'
+                      ? 'text-white shadow-xs'
+                      : 'bg-white text-slate-800 border border-slate-300 hover:bg-slate-200'
+                  }`}
+                  style={
+                    activeTab === 'theme'
+                      ? { backgroundColor: activeThemePreset.accentHex }
+                      : undefined
+                  }
+                >
+                  <Palette className="w-3.5 h-3.5" />
+                  <span>8. Theme &amp; Look</span>
                 </button>
               </div>
 
@@ -1754,6 +1954,291 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                     </div>
                   </div>
 
+                  {editingStudentId && (() => {
+                    const previewBatch = batches.find((b) => b.batchCode === stuBatchCode);
+                    const previewPlan =
+                      feePlans.find((fp) => fp.classNum === previewBatch?.classNum) || feePlans[0];
+                    const previewBase = previewPlan ? previewPlan.monthlyFee : 500;
+                    const previewDisc =
+                      DISCOUNT_OPTIONS.find((d) => d.label === stuDiscountType) ||
+                      DISCOUNT_OPTIONS[0];
+                    const previewNet = Math.max(
+                      0,
+                      Math.round(previewBase * (1 - previewDisc.percent / 100))
+                    );
+
+                    return (
+                      <form
+                        onSubmit={handleSaveStudentDetails}
+                        className="p-5 bg-amber-50/80 rounded-2xl border border-amber-300 space-y-4"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 pb-2.5">
+                          <div>
+                            <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                              <Pencil className="w-4 h-4 text-amber-700" />
+                              <span>Edit Student Details ({stuCode})</span>
+                            </h4>
+                            <p className="text-[11px] text-amber-900">
+                              Fee receipts, attendance history, promotion logs & portal login remain untouched.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={cancelStudentEdit}
+                            className="text-xs font-bold text-slate-600 hover:text-slate-900 underline cursor-pointer"
+                          >
+                            Cancel Edit
+                          </button>
+                        </div>
+
+                        {stuEditError && (
+                          <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold rounded-lg flex items-center gap-1.5">
+                            <AlertCircle className="w-4 h-4 shrink-0" />
+                            <span>{stuEditError}</span>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Student ID / Roll Code *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={stuCode}
+                              onChange={(e) => setStuCode(e.target.value)}
+                              className="w-full px-3 py-2 text-xs font-mono font-bold bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Student Full Name *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={stuName}
+                              onChange={(e) => setStuName(e.target.value)}
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Father / Guardian Name *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={stuParentName}
+                              onChange={(e) => setStuParentName(e.target.value)}
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              WhatsApp / Contact Phone *
+                            </label>
+                            <input
+                              type="tel"
+                              required
+                              maxLength={12}
+                              value={stuPhone}
+                              onChange={(e) => setStuPhone(e.target.value)}
+                              className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Study Centre
+                            </label>
+                            <select
+                              value={stuCentreId}
+                              onChange={(e) => setStuCentreId(e.target.value)}
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                            >
+                              {instForm.studyCentres.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.name} ({c.centreCode})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Class, Batch ID & Shift
+                            </label>
+                            <select
+                              value={stuBatchCode}
+                              onChange={(e) => setStuBatchCode(e.target.value)}
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg font-medium"
+                            >
+                              {batches.map((b) => (
+                                <option key={b.id} value={b.batchCode}>
+                                  [{b.batchCode}] {b.classLevel} — {b.shift}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Board
+                            </label>
+                            <select
+                              value={stuBoard}
+                              onChange={(e) =>
+                                setStuBoard(e.target.value as 'BSEB (Bihar Board)' | 'CBSE')
+                              }
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                            >
+                              <option value="BSEB (Bihar Board)">BSEB (Bihar Board)</option>
+                              <option value="CBSE">CBSE</option>
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Village / Ward / Address
+                            </label>
+                            <input
+                              type="text"
+                              value={stuVillage}
+                              onChange={(e) => setStuVillage(e.target.value)}
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Enrollment Date
+                            </label>
+                            <input
+                              type="date"
+                              value={stuEnrollDate}
+                              onChange={(e) => setStuEnrollDate(e.target.value)}
+                              className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Academic Session
+                            </label>
+                            <input
+                              type="text"
+                              value={stuSession}
+                              onChange={(e) => setStuSession(e.target.value)}
+                              placeholder="2026-27"
+                              className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Enrollment Status
+                            </label>
+                            <select
+                              value={stuStatus}
+                              onChange={(e) =>
+                                setStuStatus(e.target.value as EnrollmentStatus)
+                              }
+                              className="w-full px-3 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-lg"
+                            >
+                              <option value="Enrolled">Enrolled</option>
+                              <option value="Re-enrolled">Re-enrolled</option>
+                              <option value="Suspended">Suspended</option>
+                              <option value="Disenrolled">Disenrolled</option>
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Prev. Year Back Dues (₹)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={stuPrevDues}
+                              onChange={(e) =>
+                                setStuPrevDues(Math.max(0, Number(e.target.value) || 0))
+                              }
+                              className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Discount / Charity Plan (Base: ₹{previewBase}/mo)
+                            </label>
+                            <select
+                              value={stuDiscountType}
+                              onChange={(e) =>
+                                setStuDiscountType(e.target.value as FeeDiscountType)
+                              }
+                              className="w-full px-3 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-lg"
+                            >
+                              {DISCOUNT_OPTIONS.map((opt) => (
+                                <option key={opt.label} value={opt.label}>
+                                  {opt.label} (-{opt.percent}%)
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Charity / Scholarship Note
+                            </label>
+                            <input
+                              type="text"
+                              value={stuCharityNote}
+                              onChange={(e) => setStuCharityNote(e.target.value)}
+                              placeholder="Optional verification note"
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-bold text-slate-700 block">
+                              Remarks / Notes
+                            </label>
+                            <input
+                              type="text"
+                              value={stuNotes}
+                              onChange={(e) => setStuNotes(e.target.value)}
+                              placeholder="Admin remarks"
+                              className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                          <span className="text-xs font-mono font-bold text-emerald-800">
+                            Updated Net Tuition Fee: ₹{previewNet}/mo (Base ₹{previewBase} ·{' '}
+                            {stuDiscountType})
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={cancelStudentEdit}
+                              className="px-3.5 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                            >
+                              <Save className="w-3.5 h-3.5" />
+                              <span>Save Student Details</span>
+                            </button>
+                          </div>
+                        </div>
+                      </form>
+                    );
+                  })()}
+
                   {students.length === 0 ? (
                     <div className="p-10 bg-slate-50 rounded-2xl border border-dashed border-slate-300 text-center space-y-3">
                       <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center mx-auto">
@@ -1778,106 +2263,166 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                       </button>
                     </div>
                   ) : (
-                    <div className="space-y-2.5">
-                      {students.map((stu) => (
-                        <div
-                          key={stu.id}
-                          className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
-                        >
-                          <div className="space-y-1">
-                            <div className="flex flex-wrap items-center gap-2 text-xs">
-                              <span className="font-mono font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-sm">
-                                {stu.studentIdCode}
-                              </span>
-                              <span className="font-bold text-slate-900 text-sm">
-                                {stu.studentName}
-                              </span>
-                              <span className="font-mono text-xs font-semibold text-slate-700 bg-white border border-slate-200 px-2 py-0.5 rounded-sm">
-                                {stu.batchCode} ({stu.shift})
-                              </span>
-                              <span
-                                className={`text-[11px] font-bold px-2 py-0.5 rounded-sm ${
-                                  stu.enrollmentStatus === 'Enrolled'
-                                    ? 'bg-emerald-100 text-emerald-900'
-                                    : stu.enrollmentStatus === 'Re-enrolled'
-                                    ? 'bg-indigo-100 text-indigo-900'
-                                    : 'bg-rose-100 text-rose-900'
-                                }`}
-                              >
-                                {stu.enrollmentStatus}
-                              </span>
+                    <div className="space-y-3">
+                      <div className="relative max-w-sm">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={studentListSearch}
+                          onChange={(e) => setStudentListSearch(e.target.value)}
+                          placeholder="Search student by ID, name, guardian, batch..."
+                          className="w-full pl-8 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:outline-hidden focus:border-emerald-600"
+                        />
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {students
+                          .filter((s) => {
+                            if (!studentListSearch.trim()) return true;
+                            const q = studentListSearch.toLowerCase();
+                            return (
+                              s.studentName.toLowerCase().includes(q) ||
+                              s.studentIdCode.toLowerCase().includes(q) ||
+                              s.parentName.toLowerCase().includes(q) ||
+                              s.batchCode.toLowerCase().includes(q) ||
+                              s.phone.includes(q)
+                            );
+                          })
+                          .map((stu) => (
+                            <div
+                              key={stu.id}
+                              className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+                                editingStudentId === stu.id
+                                  ? 'bg-amber-50/70 border-amber-300'
+                                  : 'bg-slate-50 border-slate-200'
+                              }`}
+                            >
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap items-center gap-2 text-xs">
+                                  <span className="font-mono font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-sm">
+                                    {stu.studentIdCode}
+                                  </span>
+                                  <span className="font-bold text-slate-900 text-sm">
+                                    {stu.studentName}
+                                  </span>
+                                  <span className="font-mono text-xs font-semibold text-slate-700 bg-white border border-slate-200 px-2 py-0.5 rounded-sm">
+                                    {stu.batchCode} ({stu.shift})
+                                  </span>
+                                  <span
+                                    className={`text-[11px] font-bold px-2 py-0.5 rounded-sm ${
+                                      stu.enrollmentStatus === 'Enrolled'
+                                        ? 'bg-emerald-100 text-emerald-900'
+                                        : stu.enrollmentStatus === 'Re-enrolled'
+                                        ? 'bg-indigo-100 text-indigo-900'
+                                        : stu.enrollmentStatus === 'Suspended'
+                                        ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                        : 'bg-rose-100 text-rose-900'
+                                    }`}
+                                  >
+                                    {stu.enrollmentStatus}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-slate-600">
+                                  Guardian: <strong>{stu.parentName}</strong> · Phone: {stu.phone} ·{' '}
+                                  {stu.classLevel} · Net Fee: <strong>₹{stu.netMonthlyFee}/mo</strong> (
+                                  {stu.discountType})
+                                </p>
+                                <p className="text-[11px] font-mono text-slate-500">
+                                  Enrolled: {stu.enrollmentDate}
+                                  {stu.suspendedDate ? ` | Suspended: ${stu.suspendedDate}` : ''}
+                                  {stu.disenrollmentDate
+                                    ? ` | Disenrolled: ${stu.disenrollmentDate}`
+                                    : ''}
+                                  {stu.reEnrollmentDate
+                                    ? ` | Re-Enrolled: ${stu.reEnrollmentDate}`
+                                    : ''}
+                                  {' · '}Receipts: {stu.feePayments?.length || 0} · Attendance Logs:{' '}
+                                  {stu.attendanceRecords?.length || 0}
+                                </p>
+                                {stu.enrollmentStatus === 'Suspended' && stu.suspensionReason && (
+                                  <p className="text-[11px] text-amber-800 font-medium">
+                                    {stu.suspensionReason}
+                                  </p>
+                                )}
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => loadStudentIntoEditor(stu)}
+                                  className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer"
+                                  title="Edit Student Details"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                  <span>Edit Details</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onClearSingleStudentPreData(stu.id);
+                                    showToast(
+                                      `Cleared pre-filled fee & attendance data for ${stu.studentName}`
+                                    );
+                                  }}
+                                  className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                                  title="Clear this student's pre-filled fee receipts and attendance history"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Clear Pre-Data</span>
+                                </button>
+
+                                {stu.enrollmentStatus === 'Suspended' ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onReinstateStudent(stu.id);
+                                      showToast(
+                                        `Reinstated ${stu.studentName} to Enrolled status.`
+                                      );
+                                    }}
+                                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold cursor-pointer"
+                                  >
+                                    Reinstate
+                                  </button>
+                                ) : stu.enrollmentStatus === 'Disenrolled' ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onReEnrollStudent(stu.id, todayStr, stu.batchCode);
+                                      showToast(`Re-enrolled ${stu.studentName}`);
+                                    }}
+                                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold cursor-pointer"
+                                  >
+                                    Re-Enroll
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onDisenrollStudent(stu.id, todayStr, 'Disenrolled by Admin');
+                                      showToast(`Marked ${stu.studentName} as Disenrolled`);
+                                    }}
+                                    className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg text-xs font-bold cursor-pointer"
+                                  >
+                                    Disenroll
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onDeleteStudent(stu.id);
+                                    showToast(`Removed ${stu.studentName} from register`);
+                                  }}
+                                  className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                                  title="Delete Student Record"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
                             </div>
-                            <p className="text-xs text-slate-600">
-                              Guardian: <strong>{stu.parentName}</strong> · Phone: {stu.phone} ·{' '}
-                              {stu.classLevel} · Net Fee: <strong>₹{stu.netMonthlyFee}/mo</strong> (
-                              {stu.discountType})
-                            </p>
-                            <p className="text-[11px] font-mono text-slate-500">
-                              Enrolled: {stu.enrollmentDate}
-                              {stu.disenrollmentDate
-                                ? ` | Disenrolled: ${stu.disenrollmentDate}`
-                                : ''}
-                              {stu.reEnrollmentDate
-                                ? ` | Re-Enrolled: ${stu.reEnrollmentDate}`
-                                : ''}
-                              {' · '}Receipts: {stu.feePayments?.length || 0} · Attendance Logs:{' '}
-                              {stu.attendanceRecords?.length || 0}
-                            </p>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-2 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onClearSingleStudentPreData(stu.id);
-                                showToast(
-                                  `Cleared pre-filled fee & attendance data for ${stu.studentName}`
-                                );
-                              }}
-                              className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
-                              title="Clear this student's pre-filled fee receipts and attendance history"
-                            >
-                              <RotateCcw className="w-3 h-3" />
-                              <span>Clear Pre-Data</span>
-                            </button>
-
-                            {stu.enrollmentStatus === 'Disenrolled' ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onReEnrollStudent(stu.id, todayStr, stu.batchCode);
-                                  showToast(`Re-enrolled ${stu.studentName}`);
-                                }}
-                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold cursor-pointer"
-                              >
-                                Re-Enroll
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onDisenrollStudent(stu.id, todayStr, 'Disenrolled by Admin');
-                                  showToast(`Marked ${stu.studentName} as Disenrolled`);
-                                }}
-                                className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg text-xs font-bold cursor-pointer"
-                              >
-                                Disenroll
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onDeleteStudent(stu.id);
-                                showToast(`Removed ${stu.studentName} from register`);
-                              }}
-                              className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
-                              title="Delete Student Record"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                          ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -2905,7 +3450,310 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                     </div>
                   </div>
 
-                  {/* Student Portal Password Reset Table + Recent Security Logs */}
+                  {/* Automated Fee-Default Suspension Background Listener Policy */}
+                  {(() => {
+                    const threshold = Math.max(
+                      1,
+                      Math.min(12, autoSuspensionConfig.consecutiveMissedMonthsThreshold)
+                    );
+                    const suspendedStudents = students.filter(
+                      (s) => s.enrollmentStatus === 'Suspended'
+                    );
+                    const monitoredStudents = students.filter(
+                      (s) =>
+                        s.enrollmentStatus !== 'Disenrolled' &&
+                        !s.isCharitySeat &&
+                        s.netMonthlyFee > 0
+                    );
+                    const atRiskStudents = monitoredStudents.filter((s) => {
+                      if (s.enrollmentStatus === 'Suspended') return false;
+                      const summary = computeConsecutiveMissedMonths(s, feePlans, {
+                        includePartialAsMissed: autoSuspensionConfig.includePartialAsMissed
+                      });
+                      return (
+                        summary.consecutiveMissedMonths > 0 &&
+                        summary.consecutiveMissedMonths >= Math.max(1, threshold - 1)
+                      );
+                    });
+
+                    return (
+                      <div className="bg-white p-5 rounded-2xl border border-amber-200 shadow-xs space-y-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3.5">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <ShieldAlert className="w-4 h-4 text-amber-700" />
+                              <h4 className="text-sm font-bold text-slate-900">
+                                Automated Fee-Default Suspension Listener
+                              </h4>
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-sm ${
+                                  autoSuspensionConfig.enabled
+                                    ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                                    : 'bg-slate-100 text-slate-600 border border-slate-300'
+                                }`}
+                              >
+                                {autoSuspensionConfig.enabled
+                                  ? 'Listener Active'
+                                  : 'Listener Paused'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600">
+                              Monitors monthly fee ledgers in the background and automatically updates
+                              a student&apos;s enrollment status to <strong>Suspended</strong> when
+                              consecutive missed monthly payments reach the configured threshold,
+                              recording each action in the audit log.
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const res = onRunAutoSuspensionScan();
+                              if (res.suspendedCount > 0 || res.reinstatedCount > 0) {
+                                showToast(
+                                  `Policy check complete: ${res.suspendedCount} suspended, ${res.reinstatedCount} reinstated.`
+                                );
+                              } else {
+                                showToast(
+                                  'Policy check complete: no new enrollment status changes required.'
+                                );
+                              }
+                            }}
+                            className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0 shadow-xs"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Run Policy Check Now</span>
+                          </button>
+                        </div>
+
+                        {/* Live Compliance KPI Strip */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                          <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200 flex items-center justify-between">
+                            <div>
+                              <span className="text-[11px] font-semibold text-amber-900 block">
+                                Currently Suspended
+                              </span>
+                              <span className="text-[10px] text-amber-700">
+                                Reached {threshold}+ missed months
+                              </span>
+                            </div>
+                            <span className="text-xl font-extrabold font-mono tabular-nums text-amber-900">
+                              {suspendedStudents.length}
+                            </span>
+                          </div>
+                          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+                            <div>
+                              <span className="text-[11px] font-semibold text-slate-700 block">
+                                Near Threshold (At Risk)
+                              </span>
+                              <span className="text-[10px] text-slate-500">
+                                Active accounts with overdue streak
+                              </span>
+                            </div>
+                            <span className="text-xl font-extrabold font-mono tabular-nums text-slate-900">
+                              {atRiskStudents.length}
+                            </span>
+                          </div>
+                          <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 flex items-center justify-between">
+                            <div>
+                              <span className="text-[11px] font-semibold text-emerald-900 block">
+                                Monitored Fee Accounts
+                              </span>
+                              <span className="text-[10px] text-emerald-700">
+                                Excludes Charity &amp; Disenrolled
+                              </span>
+                            </div>
+                            <span className="text-xl font-extrabold font-mono tabular-nums text-emerald-900">
+                              {monitoredStudents.length}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Policy Controls */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                          <label className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                            <div>
+                              <span className="font-bold text-slate-900 block">
+                                Enable Background Auto-Suspension Listener
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                Automatically checks ledgers on update and every{' '}
+                                {autoSuspensionConfig.checkIntervalSeconds}s
+                              </span>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={autoSuspensionConfig.enabled}
+                              onChange={(e) => {
+                                onUpdateAutoSuspensionConfig({
+                                  ...autoSuspensionConfig,
+                                  enabled: e.target.checked
+                                });
+                                showToast(
+                                  e.target.checked
+                                    ? 'Auto-suspension background listener enabled.'
+                                    : 'Auto-suspension background listener paused.'
+                                );
+                              }}
+                              className="w-4 h-4 text-emerald-600"
+                            />
+                          </label>
+
+                          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
+                            <div>
+                              <label
+                                htmlFor="auto-suspend-threshold"
+                                className="font-bold text-slate-900 block"
+                              >
+                                Consecutive Missed Months Threshold
+                              </label>
+                              <span className="text-[11px] text-slate-500">
+                                Suspend when trailing unpaid months hit this count
+                              </span>
+                            </div>
+                            <select
+                              id="auto-suspend-threshold"
+                              value={autoSuspensionConfig.consecutiveMissedMonthsThreshold}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                onUpdateAutoSuspensionConfig({
+                                  ...autoSuspensionConfig,
+                                  consecutiveMissedMonthsThreshold: val
+                                });
+                                showToast(
+                                  `Auto-suspension threshold set to ${val} consecutive missed month${
+                                    val === 1 ? '' : 's'
+                                  }.`
+                                );
+                              }}
+                              className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-900 tabular-nums"
+                            >
+                              {[1, 2, 3, 4, 5, 6].map((n) => (
+                                <option key={n} value={n}>
+                                  {n} {n === 1 ? 'Month' : 'Months'}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <label className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                            <div>
+                              <span className="font-bold text-slate-900 block">
+                                Count Partially Paid Months as Missed
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                Treat incomplete monthly dues toward the suspension streak
+                              </span>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={autoSuspensionConfig.includePartialAsMissed}
+                              onChange={(e) =>
+                                onUpdateAutoSuspensionConfig({
+                                  ...autoSuspensionConfig,
+                                  includePartialAsMissed: e.target.checked
+                                })
+                              }
+                              className="w-4 h-4 text-emerald-600"
+                            />
+                          </label>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <label className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer gap-2">
+                              <div>
+                                <span className="font-bold text-slate-900 block">
+                                  Auto-Reinstate on Payment
+                                </span>
+                                <span className="text-[10px] text-slate-500">
+                                  Restore to Enrolled once cleared
+                                </span>
+                              </div>
+                              <input
+                                type="checkbox"
+                                checked={autoSuspensionConfig.autoReinstateOnPayment}
+                                onChange={(e) =>
+                                  onUpdateAutoSuspensionConfig({
+                                    ...autoSuspensionConfig,
+                                    autoReinstateOnPayment: e.target.checked
+                                  })
+                                }
+                                className="w-4 h-4 text-emerald-600 shrink-0"
+                              />
+                            </label>
+
+                            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
+                              <div>
+                                <label
+                                  htmlFor="auto-suspend-interval"
+                                  className="font-bold text-slate-900 block"
+                                >
+                                  Scan Interval
+                                </label>
+                                <span className="text-[10px] text-slate-500">Background poll</span>
+                              </div>
+                              <select
+                                id="auto-suspend-interval"
+                                value={autoSuspensionConfig.checkIntervalSeconds}
+                                onChange={(e) =>
+                                  onUpdateAutoSuspensionConfig({
+                                    ...autoSuspensionConfig,
+                                    checkIntervalSeconds: Number(e.target.value)
+                                  })
+                                }
+                                className="px-2 py-1 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-900 text-xs tabular-nums"
+                              >
+                                <option value={10}>10s</option>
+                                <option value={15}>15s</option>
+                                <option value={30}>30s</option>
+                                <option value={60}>60s</option>
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Quick Reinstatement List for Currently Suspended Students */}
+                        {suspendedStudents.length > 0 && (
+                          <div className="pt-2 border-t border-slate-200 space-y-2">
+                            <span className="text-[11px] font-bold uppercase tracking-wide text-amber-900 block">
+                              Suspended Accounts ({suspendedStudents.length})
+                            </span>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                              {suspendedStudents.map((stu) => (
+                                <div
+                                  key={stu.id}
+                                  className="p-2.5 rounded-xl bg-amber-50/70 border border-amber-200 flex items-center justify-between gap-2 text-xs"
+                                >
+                                  <div className="min-w-0">
+                                    <p className="font-bold text-slate-900 truncate">
+                                      {stu.studentName}{' '}
+                                      <span className="font-mono text-[11px] text-amber-900">
+                                        ({stu.studentIdCode})
+                                      </span>
+                                    </p>
+                                    <p className="text-[10px] text-amber-800 truncate">
+                                      {stu.suspensionReason || 'Suspended for missed payments'}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onReinstateStudent(stu.id);
+                                      showToast(`Reinstated ${stu.studentName} to Enrolled.`);
+                                    }}
+                                    className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold cursor-pointer shrink-0"
+                                  >
+                                    Reinstate
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Student Portal Password Reset Table + Recent Security & Policy Audit Logs */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div className="bg-white p-5 rounded-2xl border border-slate-200 space-y-3">
                       <h4 className="text-sm font-bold text-slate-900">
@@ -2954,43 +3802,90 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                     </div>
 
                     <div className="bg-white p-5 rounded-2xl border border-slate-200 space-y-3">
-                      <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                        <Clock className="w-4 h-4 text-emerald-700" />
-                        <span>Security & OTP Audit Log ({securityLogs.length})</span>
-                      </h4>
-                      {securityLogs.length === 0 ? (
-                        <p className="text-xs text-slate-400 py-6 text-center">
-                          No login or security events recorded in this session yet.
-                        </p>
-                      ) : (
-                        <div className="max-h-56 overflow-y-auto space-y-2">
-                          {securityLogs.map((log) => (
-                            <div
-                              key={log.id}
-                              className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2 text-xs"
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                          <Clock className="w-4 h-4 text-emerald-700" />
+                          <span>System &amp; Security Audit Log ({securityLogs.length})</span>
+                        </h4>
+                        <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg text-[11px]">
+                          {(
+                            [
+                              { id: 'all', label: 'All' },
+                              { id: 'suspension', label: 'Auto-Suspension' },
+                              { id: 'security', label: 'Security' }
+                            ] as const
+                          ).map((tab) => (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              onClick={() => setAuditLogFilter(tab.id)}
+                              className={`px-2 py-1 rounded-md font-bold cursor-pointer transition-colors ${
+                                auditLogFilter === tab.id
+                                  ? 'bg-white text-slate-900 shadow-xs'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
                             >
-                              <div>
-                                <p className="font-bold text-slate-900">{log.event}</p>
-                                <p className="text-[10px] text-slate-500">
-                                  Actor: <strong>{log.actor}</strong> · Method:{' '}
-                                  <strong>{log.method}</strong> · {log.timestamp}
-                                </p>
-                              </div>
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-extrabold shrink-0 ${
-                                  log.status === 'Success'
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : log.status === 'Reset'
-                                    ? 'bg-amber-100 text-amber-800'
-                                    : 'bg-red-100 text-red-800'
-                                }`}
-                              >
-                                {log.status}
-                              </span>
-                            </div>
+                              {tab.label}
+                            </button>
                           ))}
                         </div>
-                      )}
+                      </div>
+                      {(() => {
+                        const visibleLogs = securityLogs.filter((log) => {
+                          const isSuspensionLog =
+                            log.status === 'Suspended' ||
+                            log.actor.includes('Auto-Suspension') ||
+                            log.event.toLowerCase().includes('reinstated') ||
+                            log.event.toLowerCase().includes('suspended');
+                          if (auditLogFilter === 'suspension') return isSuspensionLog;
+                          if (auditLogFilter === 'security') return !isSuspensionLog;
+                          return true;
+                        });
+
+                        if (visibleLogs.length === 0) {
+                          return (
+                            <p className="text-xs text-slate-400 py-6 text-center">
+                              No matching audit log events recorded yet.
+                            </p>
+                          );
+                        }
+
+                        return (
+                          <div className="max-h-56 overflow-y-auto space-y-2">
+                            {visibleLogs.map((log) => (
+                              <div
+                                key={log.id}
+                                className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 text-xs ${
+                                  log.status === 'Suspended'
+                                    ? 'bg-amber-50/70 border-amber-200'
+                                    : 'bg-slate-50 border-slate-200/80'
+                                }`}
+                              >
+                                <div>
+                                  <p className="font-bold text-slate-900">{log.event}</p>
+                                  <p className="text-[10px] text-slate-500">
+                                    Actor: <strong>{log.actor}</strong> · Method:{' '}
+                                    <strong>{log.method}</strong> · {log.timestamp}
+                                  </p>
+                                </div>
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-extrabold shrink-0 ${
+                                    log.status === 'Success'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : log.status === 'Suspended'
+                                      ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                      : log.status === 'Reset'
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : 'bg-red-100 text-red-800'
+                                  }`}
+                                >
+                                  {log.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -3021,10 +3916,25 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                   onShowToast={showToast}
                 />
               )}
+
+              {/* TAB 8: DASHBOARD THEME & INTERACTIVE LOOK */}
+              {activeTab === 'theme' && (
+                <DashboardThemeTab
+                  themeConfig={dashboardTheme}
+                  onUpdateTheme={onUpdateDashboardTheme}
+                  onShowToast={showToast}
+                />
+              )}
             </div>
           </div>
         )}
       </div>
+      <ForgotPasswordModal
+        isOpen={showForgotSupportModal}
+        role="admin"
+        instituteConfig={instituteConfig}
+        onClose={() => setShowForgotSupportModal(false)}
+      />
     </div>
   );
 };

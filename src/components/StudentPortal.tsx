@@ -68,6 +68,7 @@ import {
   maskPhone,
   verifySecret
 } from '../utils/securityHelpers';
+import { ForgotPasswordModal } from './ForgotPasswordModal';
 
 interface StudentPortalProps {
   students: StudentRecord[];
@@ -89,6 +90,9 @@ interface StudentPortalProps {
   onRecordFeePayment: (studentId: string, payment: FeePaymentItem) => void;
   onRecordAttendance: (studentId: string, record: AttendanceRecord) => void;
   onOpenPdfExport?: (req: PdfExportRequest) => void;
+  initialLoggedInStudentId?: string | null;
+  initialVerifiedMethod?: 'Password' | 'PIN' | 'OTP' | null;
+  onExternalLogout?: () => void;
 }
 
 type PortalViewTab = 'all' | 'timetable' | 'attendance' | 'fees';
@@ -107,7 +111,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   onSecurityLog,
   onRecordFeePayment,
   onRecordAttendance,
-  onOpenPdfExport
+  onOpenPdfExport,
+  initialLoggedInStudentId = null,
+  initialVerifiedMethod = null,
+  onExternalLogout
 }) => {
   // Secure Login State (Password / Mobile PIN OR 6-Digit OTP)
   const [authMode, setAuthMode] = useState<'password' | 'otp'>('password');
@@ -118,6 +125,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [loginSuccessBanner, setLoginSuccessBanner] = useState('');
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [lockoutSeconds, setLockoutSeconds] = useState(0);
+  const [showForgotModal, setShowForgotModal] = useState(false);
 
   // OTP state
   const [otpTargetStudent, setOtpTargetStudent] = useState<StudentRecord | null>(null);
@@ -127,9 +135,12 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [otpCooldown, setOtpCooldown] = useState(0);
 
   const [loggedInStudentId, setLoggedInStudentId] = useState<string | null>(
-    securityConfig.requireStudentAuth ? null : students[0]?.id || null
+    initialLoggedInStudentId ||
+      (securityConfig.requireStudentAuth ? null : students[0]?.id || null)
   );
-  const [verifiedMethod, setVerifiedMethod] = useState<'Password' | 'PIN' | 'OTP' | null>(null);
+  const [verifiedMethod, setVerifiedMethod] = useState<'Password' | 'PIN' | 'OTP' | null>(
+    initialVerifiedMethod
+  );
 
   // Student Change Password inline form
   const [showPasswordPanel, setShowPasswordPanel] = useState(false);
@@ -782,12 +793,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   setLoggedInStudentId(null);
                   setVerifiedMethod(null);
                   setShowPasswordPanel(false);
+                  if (onExternalLogout) onExternalLogout();
                 }}
                 className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
                 title="Lock & Logout Student Session"
               >
                 <LogOut className="w-3.5 h-3.5" />
-                <span>Lock Portal</span>
+                <span>{onExternalLogout ? 'Sign Out' : 'Lock Portal'}</span>
               </button>
             </div>
           )}
@@ -1045,6 +1057,16 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </button>
               </form>
             )}
+
+            <div className="pt-2 border-t border-slate-100 text-center">
+              <button
+                type="button"
+                onClick={() => setShowForgotModal(true)}
+                className="inline-flex items-center justify-center min-h-[36px] px-2 text-xs font-bold text-emerald-800 hover:text-emerald-950 hover:underline underline-offset-4 transition-colors cursor-pointer"
+              >
+                Forgot Password? Contact Institute Support
+              </button>
+            </div>
           </div>
         ) : (
           <div className="space-y-6">
@@ -1164,6 +1186,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                         ? 'bg-emerald-900/90 text-emerald-200 border border-emerald-700'
                         : activeStudent.enrollmentStatus === 'Re-enrolled'
                         ? 'bg-indigo-900/90 text-indigo-200 border border-indigo-700'
+                        : activeStudent.enrollmentStatus === 'Suspended'
+                        ? 'bg-amber-900/90 text-amber-200 border border-amber-500'
                         : 'bg-rose-900/90 text-rose-200 border border-rose-700'
                     }`}
                   >
@@ -1176,6 +1200,15 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     · {activeStudent.board}
                   </span>
                 </div>
+
+                {activeStudent.enrollmentStatus === 'Suspended' && (
+                  <div className="mt-1 px-3 py-2 rounded-xl bg-amber-500/20 border border-amber-400/50 text-amber-100 text-xs">
+                    <strong>Enrollment Temporarily Suspended:</strong>{' '}
+                    {activeStudent.suspensionReason ||
+                      'Consecutive missed monthly fee payments exceeded institute policy threshold.'}{' '}
+                    Please clear overdue monthly tuition fees at the office to restore active status.
+                  </div>
+                )}
 
                 <h3 className="text-2xl font-extrabold text-white tracking-tight">
                   {activeStudent.studentName}{' '}
@@ -2277,6 +2310,12 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           </div>
         )}
       </div>
+      <ForgotPasswordModal
+        isOpen={showForgotModal}
+        role="student"
+        instituteConfig={instituteConfig}
+        onClose={() => setShowForgotModal(false)}
+      />
     </section>
   );
 };

@@ -1,4 +1,18 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --dash-canvas-bg: #f8fafc;
+  --dash-canvas-gradient: radial-gradient(circle at 12% 0%, rgba(16, 185, 129, 0.06), transparent 42%), #f8fafc;
+  --dash-bar-bg: #0f172a;
+  --dash-bar-border: #1e293b;
+  --dash-bar-label: #34d399;
+  --dash-accent: #059669;
+  --dash-accent-hover: #047857;
+  --dash-accent-soft: #ecfdf5;
+  --dash-card-border: #e2e8f0;
+  --dash-card-radius: 1rem;
+}
 
 @layer base {
   body {
@@ -6,8 +20,91 @@
   }
 }
 
+/* Interactive Dashboard Theme Shell */
+.dash-themed-canvas {
+  background: var(--dash-canvas-gradient, #f8fafc);
+  transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dash-themed-bar {
+  background-color: var(--dash-bar-bg, #0f172a);
+  border-color: var(--dash-bar-border, #1e293b);
+  transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Surface Depth Styles for Dashboard Cards (excludes printable official slip paper) */
+[data-dash-surface="elevated"] .dash-themed-canvas main .bg-white.rounded-2xl {
+  box-shadow: 0 4px 16px -6px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04);
+  border-color: var(--dash-card-border);
+}
+
+[data-dash-surface="frosted"] .dash-themed-canvas main .bg-white.rounded-2xl {
+  background-color: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px -10px rgba(15, 23, 42, 0.11), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  border-color: var(--dash-card-border);
+}
+
+[data-dash-surface="flat"] .dash-themed-canvas main .bg-white.rounded-2xl {
+  box-shadow: none;
+  border-color: var(--dash-card-border);
+}
+
+/* Corner Geometry Customization */
+[data-dash-corners="sharp"] .dash-themed-canvas main .rounded-2xl {
+  border-radius: 0.5rem;
+}
+
+[data-dash-corners="soft"] .dash-themed-canvas main .rounded-2xl {
+  border-radius: 1.35rem;
+}
+
+/* Interactive Hover Motion (compositor-only transform & subtle border response) */
+[data-dash-motion="lift"] .dash-themed-canvas main .bg-white.rounded-2xl {
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-dash-motion="lift"] .dash-themed-canvas main .bg-white.rounded-2xl:hover {
+  transform: translateY(-1.5px);
+  box-shadow: 0 12px 26px -12px rgba(15, 23, 42, 0.14);
+}
+
+[data-dash-motion="static"] .dash-themed-canvas *,
+[data-dash-motion="static"] .dash-themed-canvas *::before,
+[data-dash-motion="static"] .dash-themed-canvas *::after {
+  transition-duration: 0ms !important;
+}
+
+/* Compact Density Mode for High-Speed Admin Operations */
+[data-dash-density="compact"] .dash-themed-canvas main section {
+  padding-top: 1.25rem;
+  padding-bottom: 1.25rem;
+}
+
+[data-dash-density="compact"] .dash-themed-canvas main table td,
+[data-dash-density="compact"] .dash-themed-canvas main table th {
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+}
+
+.font-display {
+  font-family: 'Outfit', 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
 .font-hindi {
   font-family: 'Noto Sans Devanagari', sans-serif;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee {
+    animation: none;
+  }
+
+  [data-dash-motion="lift"] .dash-themed-canvas main .bg-white.rounded-2xl:hover {
+    transform: none;
+  }
 }
 
 @keyframes marquee {
@@ -52,14 +149,41 @@
     padding: 20px !important;
   }
 
-  #printable-pdf-export-area {
+  #printable-pdf-export-area,
+  #printable-fee-slip-area,
+  #printable-monthly-statement-area,
+  #printable-bulk-slips-area {
     display: block !important;
     position: static !important;
     width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
     box-shadow: none !important;
     border: none !important;
     padding: 0 !important;
     background: white !important;
+  }
+
+  .bulk-a4-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    break-after: page;
+    page-break-after: always;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    overflow: hidden !important;
+  }
+
+  .bulk-a4-sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
   }
 
   table {

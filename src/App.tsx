@@ -20,7 +20,8 @@ import {
   SecurityConfig,
   SecurityLogItem,
   FeeReminderSettings,
-  FeeReminderLogItem
+  FeeReminderLogItem,
+  AutoSuspensionConfig
 } from './types';
 import {
   createInitialSecurityConfig,
@@ -29,7 +30,13 @@ import {
   hashSecret,
   verifySecret
 } from './utils/securityHelpers';
-import { computeStudentFinancials, PdfExportRequest } from './utils/ledgerHelpers';
+import {
+  computeConsecutiveMissedMonths,
+  computeStudentFinancials,
+  DEFAULT_AUTO_SUSPENSION_CONFIG,
+  PdfExportRequest,
+  reconcileStudentPaidTotals
+} from './utils/ledgerHelpers';
 import {
   DEFAULT_FEE_REMINDER_SETTINGS,
   computeDaysPastDeadline,
@@ -70,6 +77,16 @@ import { PrintNoticeModal } from './components/PrintNoticeModal';
 import { PrintPdfExportModal } from './components/PrintPdfExportModal';
 import { AdminPortalModal, AdminTabType } from './components/AdminPortalModal';
 import { CloudUserInfo } from './components/DataSyncBackupTab';
+import { LoginSelectionScreen } from './components/LoginSelectionScreen';
+import { TeacherDashboard } from './components/TeacherDashboard';
+import { FeePaymentSlipSection } from './components/FeePaymentSlipSection';
+import {
+  applyDashboardThemeToDom,
+  DASHBOARD_THEME_STORAGE_KEY,
+  DashboardThemeConfig,
+  getDashboardThemePreset,
+  loadDashboardTheme
+} from './utils/dashboardTheme';
 import {
   Building2,
   GraduationCap,
@@ -79,8 +96,19 @@ import {
   Bell,
   Layers,
   LayoutDashboard,
-  Cloud
+  Cloud,
+  LogOut,
+  Palette,
+  Receipt
 } from 'lucide-react';
+
+const ACTIVE_ROLE_SESSION_KEY = 'sntc_active_role_session_v1';
+
+type ActiveRoleSession =
+  | { role: 'admin'; method: 'Password' | 'OTP' | '2FA' }
+  | { role: 'teacher'; staffId: string; method: 'Password' | 'OTP' }
+  | { role: 'student'; studentId: string; method: 'Password' | 'PIN' | 'OTP' }
+  | null;
 
 const INSTITUTE_CONFIG_KEY = 'sntc_institute_config_v5';
 const STAFF_STORAGE_KEY = 'sntc_staff_v3';
@@ -95,6 +123,7 @@ const SECURITY_LOGS_KEY = 'sntc_security_logs_v1';
 const REMINDER_SETTINGS_KEY = 'sntc_reminder_settings_v1';
 const REMINDER_LOGS_KEY = 'sntc_fee_reminders_v1';
 const AUTO_CLOUD_SYNC_KEY = 'sntc_auto_cloud_sync_v1';
+const AUTO_SUSPENSION_CONFIG_KEY = 'sntc_auto_suspension_config_v1';
 
 export default function App() {
   // 1. State: Institute Configuration & Multi-Study Centres
@@ -110,6 +139,27 @@ export default function App() {
 
   const [selectedCentreId, setSelectedCentreId] = useState<string>('all');
   const [activeMainSection, setActiveMainSection] = useState<MainSectionType>('home');
+
+  // 1B. State: Interactive Admin Dashboard Theme & Appearance Preferences
+  const [dashboardTheme, setDashboardTheme] = useState<DashboardThemeConfig>(() =>
+    loadDashboardTheme()
+  );
+  const activeThemePreset = useMemo(
+    () => getDashboardThemePreset(dashboardTheme.themeId),
+    [dashboardTheme.themeId]
+  );
+
+  useEffect(() => {
+    applyDashboardThemeToDom(dashboardTheme);
+    try {
+      localStorage.setItem(
+        DASHBOARD_THEME_STORAGE_KEY,
+        JSON.stringify(dashboardTheme)
+      );
+    } catch (e) {
+      console.error('Failed persisting dashboard theme', e);
+    }
+  }, [dashboardTheme]);
 
   // 2. State: Assigned Staff & Roles
   const [staffList, setStaffList] = useState<StaffMember[]>(() => {
@@ -177,14 +227,45 @@ export default function App() {
     return [];
   });
 
+  // State: Active Role Session (null = show Login Selection Screen)
+  const [activeRoleSession, setActiveRoleSession] = useState<ActiveRoleSession>(() => {
+    try {
+      const saved = sessionStorage.getItem(ACTIVE_ROLE_SESSION_KEY);
+      if (saved) return JSON.parse(saved) as ActiveRoleSession;
+    } catch {
+      return null;
+    }
+    return null;
+  });
+
   // State: Admin authentication
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(ADMIN_SESSION_KEY) === 'true';
+      const savedRole = sessionStorage.getItem(ACTIVE_ROLE_SESSION_KEY);
+      if (savedRole) {
+        const parsed = JSON.parse(savedRole) as ActiveRoleSession;
+        return parsed?.role === 'admin';
+      }
+      return false;
     } catch {
       return false;
     }
   });
+
+  useEffect(() => {
+    try {
+      if (activeRoleSession) {
+        sessionStorage.setItem(
+          ACTIVE_ROLE_SESSION_KEY,
+          JSON.stringify(activeRoleSession)
+        );
+      } else {
+        sessionStorage.removeItem(ACTIVE_ROLE_SESSION_KEY);
+      }
+    } catch (e) {
+      console.error('Failed persisting active role session', e);
+    }
+  }, [activeRoleSession]);
 
   // State: Password & OTP Security Settings + Audit Logs
   const [securityConfig, setSecurityConfig] = useState<SecurityConfig>(() => {
@@ -231,12 +312,28 @@ export default function App() {
     return [];
   });
 
+  // State: Automated Fee-Default Suspension Policy Configuration
+  const [autoSuspensionConfig, setAutoSuspensionConfig] = useState<AutoSuspensionConfig>(() => {
+    try {
+      const saved = localStorage.getItem(AUTO_SUSPENSION_CONFIG_KEY);
+      if (saved) {
+        return { ...DEFAULT_AUTO_SUSPENSION_CONFIG, ...JSON.parse(saved) };
+      }
+    } catch (e) {
+      console.error('Error loading auto-suspension config', e);
+    }
+    return DEFAULT_AUTO_SUSPENSION_CONFIG;
+  });
+
   // Modals
   const [selectedPrintNotice, setSelectedPrintNotice] = useState<NoticeItem | null>(null);
   const [pdfExportRequest, setPdfExportRequest] = useState<PdfExportRequest | null>(null);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<AdminTabType>('branding');
   const [editingBatch, setEditingBatch] = useState<BatchItem | null>(null);
+  const [selectedSlipStudentId, setSelectedSlipStudentId] = useState<string | undefined>(
+    undefined
+  );
 
   // Form Pre-fill
   const [enrollmentClass, setEnrollmentClass] = useState<string>('Class 10th (Matric Target)');
@@ -437,8 +534,188 @@ export default function App() {
       method,
       status
     };
-    setSecurityLogs((prev) => [newItem, ...prev].slice(0, 40));
+    setSecurityLogs((prev) => [newItem, ...prev].slice(0, 80));
   };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_SUSPENSION_CONFIG_KEY, JSON.stringify(autoSuspensionConfig));
+    } catch (e) {
+      console.error('Failed to sync auto-suspension config', e);
+    }
+  }, [autoSuspensionConfig]);
+
+  // Refs for the background auto-suspension listener so periodic checks read latest state safely
+  const studentsRef = useRef(students);
+  const feePlansRef = useRef(feePlans);
+  const autoSuspensionConfigRef = useRef(autoSuspensionConfig);
+
+  useEffect(() => {
+    studentsRef.current = students;
+  }, [students]);
+
+  useEffect(() => {
+    feePlansRef.current = feePlans;
+  }, [feePlans]);
+
+  useEffect(() => {
+    autoSuspensionConfigRef.current = autoSuspensionConfig;
+  }, [autoSuspensionConfig]);
+
+  const runAutoSuspensionEvaluation = useCallback(
+    (options?: { ignoreOverrides?: boolean; manualTrigger?: boolean }) => {
+      const cfg = autoSuspensionConfigRef.current;
+      if (!cfg.enabled && !options?.manualTrigger) {
+        return { suspendedCount: 0, reinstatedCount: 0 };
+      }
+
+      const threshold = Math.max(
+        1,
+        Math.min(12, Math.floor(cfg.consecutiveMissedMonthsThreshold || 3))
+      );
+      const currentStudents = studentsRef.current;
+      const currentFeePlans = feePlansRef.current;
+      const todayIso = new Date().toISOString().split('T')[0];
+      const nowStamp = new Date().toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      let hasStudentChanges = false;
+      let suspendedCount = 0;
+      let reinstatedCount = 0;
+      const newAuditLogs: SecurityLogItem[] = [];
+
+      const nextStudents = currentStudents.map((stu) => {
+        if (stu.enrollmentStatus === 'Disenrolled') return stu;
+
+        const missed = computeConsecutiveMissedMonths(stu, currentFeePlans, {
+          includePartialAsMissed: cfg.includePartialAsMissed
+        });
+
+        if (missed.isExempt) {
+          if (stu.suspensionOverrideUntilCount !== undefined) {
+            hasStudentChanges = true;
+            return { ...stu, suspensionOverrideUntilCount: undefined };
+          }
+          return stu;
+        }
+
+        // Suspend active student when consecutive missed payments reach configured threshold
+        if (
+          stu.enrollmentStatus !== 'Suspended' &&
+          missed.consecutiveMissedMonths >= threshold
+        ) {
+          if (
+            !options?.ignoreOverrides &&
+            typeof stu.suspensionOverrideUntilCount === 'number' &&
+            missed.consecutiveMissedMonths <= stu.suspensionOverrideUntilCount
+          ) {
+            return stu;
+          }
+
+          hasStudentChanges = true;
+          suspendedCount += 1;
+          const monthsSummary = missed.missedMonthLabels.join(', ');
+          const reason = `Auto-suspended: ${missed.consecutiveMissedMonths} consecutive missed monthly payment${
+            missed.consecutiveMissedMonths === 1 ? '' : 's'
+          } (${monthsSummary}) reached policy threshold of ${threshold}.`;
+
+          newAuditLogs.push({
+            id: `sec-susp-${Date.now()}-${suspendedCount}-${Math.floor(Math.random() * 1000)}`,
+            timestamp: nowStamp,
+            actor: options?.manualTrigger
+              ? 'Auto-Suspension Policy (Manual Scan)'
+              : 'Auto-Suspension Listener',
+            event: `Auto-suspended ${stu.studentName} (${stu.studentIdCode}) — ${missed.consecutiveMissedMonths} consecutive missed payments (${monthsSummary}) [Threshold: ${threshold}]`,
+            method: 'System',
+            status: 'Suspended'
+          });
+
+          return {
+            ...stu,
+            enrollmentStatus: 'Suspended' as const,
+            suspendedDate: todayIso,
+            suspensionReason: reason,
+            suspensionOverrideUntilCount: undefined
+          };
+        }
+
+        // Auto-reinstate suspended student if arrears were cleared below threshold
+        if (
+          stu.enrollmentStatus === 'Suspended' &&
+          cfg.autoReinstateOnPayment &&
+          missed.consecutiveMissedMonths < threshold
+        ) {
+          hasStudentChanges = true;
+          reinstatedCount += 1;
+
+          newAuditLogs.push({
+            id: `sec-reinst-${Date.now()}-${reinstatedCount}-${Math.floor(Math.random() * 1000)}`,
+            timestamp: nowStamp,
+            actor: 'Auto-Suspension Listener',
+            event: `Auto-reinstated ${stu.studentName} (${stu.studentIdCode}) to Enrolled — consecutive missed payments dropped to ${missed.consecutiveMissedMonths} (below threshold ${threshold})`,
+            method: 'System',
+            status: 'Success'
+          });
+
+          return {
+            ...stu,
+            enrollmentStatus: 'Enrolled' as const,
+            suspendedDate: undefined,
+            suspensionReason: undefined,
+            suspensionOverrideUntilCount: undefined
+          };
+        }
+
+        // Clear stale manual override once student's missed streak falls below threshold
+        if (
+          stu.enrollmentStatus !== 'Suspended' &&
+          missed.consecutiveMissedMonths < threshold &&
+          stu.suspensionOverrideUntilCount !== undefined
+        ) {
+          hasStudentChanges = true;
+          return { ...stu, suspensionOverrideUntilCount: undefined };
+        }
+
+        return stu;
+      });
+
+      if (hasStudentChanges) {
+        studentsRef.current = nextStudents;
+        setStudents(nextStudents);
+      }
+
+      if (newAuditLogs.length > 0) {
+        setSecurityLogs((prev) => [...newAuditLogs, ...prev].slice(0, 80));
+      }
+
+      return { suspendedCount, reinstatedCount };
+    },
+    []
+  );
+
+  // Reactive background listener: evaluates whenever student ledgers, fee plans, or policy config change
+  useEffect(() => {
+    if (!autoSuspensionConfig.enabled) return;
+    runAutoSuspensionEvaluation();
+  }, [students, feePlans, autoSuspensionConfig, runAutoSuspensionEvaluation]);
+
+  // Periodic background listener: continuously monitors enrollment compliance on the configured interval
+  useEffect(() => {
+    if (!autoSuspensionConfig.enabled) return;
+    const intervalMs = Math.max(5, autoSuspensionConfig.checkIntervalSeconds || 15) * 1000;
+    const timer = window.setInterval(() => {
+      runAutoSuspensionEvaluation();
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [
+    autoSuspensionConfig.enabled,
+    autoSuspensionConfig.checkIntervalSeconds,
+    runAutoSuspensionEvaluation
+  ]);
 
   useEffect(() => {
     try {
@@ -568,7 +845,32 @@ export default function App() {
 
   const handleCompleteAdminLogin = (method: 'Password' | 'OTP' | '2FA') => {
     setIsAdmin(true);
+    setActiveRoleSession({ role: 'admin', method });
+    setActiveMainSection('student-dashboard');
     addSecurityLog('Admin', `Admin Control Suite unlocked via ${method}`, method, 'Success');
+  };
+
+  const handleTeacherAuthenticated = (
+    staff: StaffMember,
+    method: 'Password' | 'OTP'
+  ) => {
+    setIsAdmin(false);
+    setActiveRoleSession({ role: 'teacher', staffId: staff.id, method });
+  };
+
+  const handleStudentAuthenticated = (
+    student: StudentRecord,
+    method: 'Password' | 'PIN' | 'OTP'
+  ) => {
+    setIsAdmin(false);
+    setActiveRoleSession({ role: 'student', studentId: student.id, method });
+  };
+
+  const handleSwitchLoginRole = () => {
+    setIsAdmin(false);
+    setIsAdminModalOpen(false);
+    setActiveRoleSession(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleUpdateAdminPassword = async (newPassword: string) => {
@@ -635,6 +937,7 @@ export default function App() {
   const handleAdminLogout = () => {
     setIsAdmin(false);
     setIsAdminModalOpen(false);
+    setActiveRoleSession(null);
     addSecurityLog('Admin', 'Admin signed out and locked suite', 'System', 'Success');
   };
 
@@ -643,22 +946,134 @@ export default function App() {
     setIsAdminModalOpen(true);
   };
 
-  // Student Lifecycle Handlers (Enroll / Disenroll / Re-enroll)
+  // Student Lifecycle Handlers (Enroll / Edit / Disenroll / Re-enroll)
   const handleAddOrUpdateStudent = (student: StudentRecord) => {
-    setStudents((prev) => {
-      const exists = prev.some((s) => s.id === student.id);
-      if (exists) {
-        return prev.map((s) => (s.id === student.id ? student : s));
-      }
-      return [student, ...prev];
+    const existing = students.find((s) => s.id === student.id);
+
+    const existingWasSuspended = existing?.enrollmentStatus === 'Suspended';
+    const nextIsSuspended = student.enrollmentStatus === 'Suspended';
+    const currentMissedForStudent = computeConsecutiveMissedMonths(student, feePlans, {
+      includePartialAsMissed: autoSuspensionConfig.includePartialAsMissed
     });
-    // Also increment batch enrolled count if below totalSeats
-    setBatches((prev) =>
-      prev.map((b) =>
-        b.batchCode === student.batchCode
-          ? { ...b, enrolledCount: Math.min(b.totalSeats, b.enrolledCount + 1) }
-          : b
+    const todayIso = new Date().toISOString().split('T')[0];
+
+    const normalizedStudent: StudentRecord = {
+      ...student,
+      suspendedDate: nextIsSuspended ? student.suspendedDate || todayIso : undefined,
+      suspensionReason: nextIsSuspended
+        ? student.suspensionReason || 'Manually suspended by Administrator'
+        : undefined,
+      suspensionOverrideUntilCount:
+        existingWasSuspended && !nextIsSuspended && student.enrollmentStatus !== 'Disenrolled'
+          ? currentMissedForStudent.consecutiveMissedMonths >=
+            autoSuspensionConfig.consecutiveMissedMonthsThreshold
+            ? currentMissedForStudent.consecutiveMissedMonths
+            : undefined
+          : nextIsSuspended
+          ? undefined
+          : student.suspensionOverrideUntilCount
+    };
+
+    setStudents((prev) => {
+      if (existing) {
+        return prev.map((s) => (s.id === normalizedStudent.id ? { ...s, ...normalizedStudent } : s));
+      }
+      return [normalizedStudent, ...prev];
+    });
+
+    if (!existing) {
+      if (normalizedStudent.enrollmentStatus !== 'Disenrolled') {
+        setBatches((prev) =>
+          prev.map((b) =>
+            b.batchCode === normalizedStudent.batchCode
+              ? { ...b, enrolledCount: Math.min(b.totalSeats, b.enrolledCount + 1) }
+              : b
+          )
+        );
+      }
+      return;
+    }
+
+    // Reconcile batch seat counts only when batch or active status actually changed
+    const wasActive = existing.enrollmentStatus !== 'Disenrolled';
+    const isNowActive = normalizedStudent.enrollmentStatus !== 'Disenrolled';
+    const batchChanged = existing.batchCode !== normalizedStudent.batchCode;
+
+    if (batchChanged || wasActive !== isNowActive) {
+      setBatches((prev) =>
+        prev.map((b) => {
+          let nextCount = b.enrolledCount;
+          if (wasActive && b.batchCode === existing.batchCode && (!isNowActive || batchChanged)) {
+            nextCount = Math.max(0, nextCount - 1);
+          }
+          if (
+            isNowActive &&
+            b.batchCode === normalizedStudent.batchCode &&
+            (!wasActive || batchChanged)
+          ) {
+            nextCount = Math.min(b.totalSeats, nextCount + 1);
+          }
+          return nextCount === b.enrolledCount ? b : { ...b, enrolledCount: nextCount };
+        })
+      );
+    }
+
+    if (!existingWasSuspended && nextIsSuspended) {
+      addSecurityLog(
+        'Admin',
+        `Manually suspended ${normalizedStudent.studentName} (${normalizedStudent.studentIdCode})`,
+        'System',
+        'Suspended'
+      );
+    } else if (existingWasSuspended && !nextIsSuspended) {
+      addSecurityLog(
+        'Admin',
+        `Reinstated ${normalizedStudent.studentName} (${normalizedStudent.studentIdCode}) to ${normalizedStudent.enrollmentStatus}`,
+        'System',
+        'Success'
+      );
+    } else {
+      addSecurityLog(
+        'Admin',
+        `Updated student details for ${normalizedStudent.studentName} (${normalizedStudent.studentIdCode})`,
+        'System',
+        'Success'
+      );
+    }
+  };
+
+  const handleReinstateSuspendedStudent = (studentId: string) => {
+    const target = students.find((s) => s.id === studentId);
+    if (!target) return;
+    const missed = computeConsecutiveMissedMonths(target, feePlans, {
+      includePartialAsMissed: autoSuspensionConfig.includePartialAsMissed
+    });
+    const overrideCount =
+      missed.consecutiveMissedMonths >= autoSuspensionConfig.consecutiveMissedMonthsThreshold
+        ? missed.consecutiveMissedMonths
+        : undefined;
+
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === studentId
+          ? {
+              ...s,
+              enrollmentStatus: 'Enrolled',
+              suspendedDate: undefined,
+              suspensionReason: undefined,
+              suspensionOverrideUntilCount: overrideCount
+            }
+          : s
       )
+    );
+
+    addSecurityLog(
+      'Admin',
+      `Reinstated ${target.studentName} (${target.studentIdCode}) from Suspended to Enrolled${
+        overrideCount ? ` (override active until >${overrideCount} missed months)` : ''
+      }`,
+      'System',
+      'Success'
     );
   };
 
@@ -779,36 +1194,132 @@ export default function App() {
     setStudents((prev) =>
       prev.map((s) => {
         if (s.id !== studentId) return s;
-        const updatedPayments = [payment, ...(s.feePayments || [])];
-        const sessionDelta =
-          typeof payment.sessionPaidPart === 'number'
-            ? payment.sessionPaidPart
-            : payment.isPreviousYearClearance || payment.session === '2025-26'
-            ? 0
-            : payment.amount;
-        const prevYearDelta =
-          typeof payment.prevYearClearedPart === 'number'
-            ? payment.prevYearClearedPart
-            : payment.isPreviousYearClearance || payment.session === '2025-26'
-            ? payment.amount
-            : 0;
-        const currentSessionPaymentsSum = updatedPayments.reduce(
-          (sum, p) =>
-            sum +
-            (typeof p.sessionPaidPart === 'number'
-              ? p.sessionPaidPart
-              : p.isPreviousYearClearance || p.session === '2025-26'
-              ? 0
-              : p.amount),
-          0
-        );
+        // Prevent duplicate payment ID or duplicate receipt number
+        const existingPayments = s.feePayments || [];
+        if (
+          existingPayments.some(
+            (p) => p.id === payment.id || p.receiptNo === payment.receiptNo
+          )
+        ) {
+          return s;
+        }
+        const updatedPayments = [payment, ...existingPayments];
+        const reconciled = reconcileStudentPaidTotals(s, updatedPayments);
         return {
           ...s,
-          paidAmount: Math.max((s.paidAmount || 0) + sessionDelta, currentSessionPaymentsSum),
-          previousYearClearedAmount: (s.previousYearClearedAmount || 0) + prevYearDelta,
+          paidAmount: reconciled.paidAmount,
+          previousYearClearedAmount: reconciled.previousYearClearedAmount,
           feePayments: updatedPayments
         };
       })
+    );
+  };
+
+  const handleEditOrCancelPayment = (
+    studentId: string,
+    paymentId: string,
+    update: {
+      action: 'Edited' | 'Cancelled';
+      reason: string;
+      newAmount?: number;
+      newMode?: FeePaymentItem['mode'];
+      newTransactionId?: string;
+      newRemarks?: string;
+    }
+  ) => {
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id !== studentId) return s;
+        const existingPayments = s.feePayments || [];
+        const updatedPayments = existingPayments.map((p) => {
+          if (p.id !== paymentId) return p;
+          const auditEntry = {
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+            timestamp: new Date().toLocaleString('en-IN'),
+            action: update.action,
+            actor: instituteConfig.founder,
+            reason: update.reason,
+            previousAmount: p.amount,
+            newAmount: update.action === 'Edited' ? update.newAmount : 0
+          };
+          const nextHistory = [...(p.auditHistory || []), auditEntry];
+
+          if (update.action === 'Cancelled') {
+            return {
+              ...p,
+              status: 'Cancelled' as const,
+              auditHistory: nextHistory
+            };
+          }
+
+          const nextAmt =
+            typeof update.newAmount === 'number' ? update.newAmount : p.amount;
+          const nextSessionPart = p.isPreviousYearClearance
+            ? 0
+            : typeof p.prevYearClearedPart === 'number'
+            ? Math.max(0, nextAmt - Math.min(nextAmt, p.prevYearClearedPart))
+            : nextAmt;
+          const nextPrevPart = p.isPreviousYearClearance
+            ? nextAmt
+            : typeof p.prevYearClearedPart === 'number'
+            ? Math.min(nextAmt, p.prevYearClearedPart)
+            : 0;
+          const nextBreakdown = p.feeBreakdown
+            ? {
+                ...p.feeBreakdown,
+                currentPayment: nextAmt,
+                remainingDues: Math.max(
+                  0,
+                  p.feeBreakdown.totalPayable -
+                    p.feeBreakdown.previouslyPaid -
+                    nextAmt
+                )
+              }
+            : undefined;
+          const nextPaymentStatus: 'Paid' | 'Partially Paid' | 'Unpaid' =
+            nextBreakdown
+              ? nextBreakdown.remainingDues === 0
+                ? 'Paid'
+                : nextAmt + nextBreakdown.previouslyPaid > 0
+                ? 'Partially Paid'
+                : 'Unpaid'
+              : p.paymentStatus || 'Paid';
+
+          return {
+            ...p,
+            amount: nextAmt,
+            sessionPaidPart: nextSessionPart,
+            prevYearClearedPart: nextPrevPart,
+            mode: update.newMode || p.mode,
+            transactionId:
+              update.newTransactionId !== undefined
+                ? update.newTransactionId || undefined
+                : p.transactionId,
+            remarks:
+              update.newRemarks !== undefined
+                ? update.newRemarks || undefined
+                : p.remarks,
+            feeBreakdown: nextBreakdown,
+            paymentStatus: nextPaymentStatus,
+            isPartialPayment: nextPaymentStatus === 'Partially Paid',
+            auditHistory: nextHistory
+          };
+        });
+
+        const reconciled = reconcileStudentPaidTotals(s, updatedPayments);
+        return {
+          ...s,
+          paidAmount: reconciled.paidAmount,
+          previousYearClearedAmount: reconciled.previousYearClearedAmount,
+          feePayments: updatedPayments
+        };
+      })
+    );
+    addSecurityLog(
+      instituteConfig.founder,
+      `${update.action} fee receipt (${update.reason})`,
+      'System',
+      'Success'
     );
   };
 
@@ -1404,8 +1915,150 @@ export default function App() {
 
   const isPrintModalActive = Boolean(selectedPrintNotice || pdfExportRequest);
 
+  // 1. Login Selection Screen (Initial View when no role is signed in)
+  if (!activeRoleSession) {
+    return (
+      <LoginSelectionScreen
+        instituteConfig={instituteConfig}
+        securityConfig={securityConfig}
+        staffList={staffList}
+        students={students}
+        onVerifyAdminPassword={handleVerifyAdminPassword}
+        onAdminAuthenticated={handleCompleteAdminLogin}
+        onTeacherAuthenticated={handleTeacherAuthenticated}
+        onStudentAuthenticated={handleStudentAuthenticated}
+        onSecurityLog={addSecurityLog}
+      />
+    );
+  }
+
+  // 2. Role-Based Teacher Dashboard
+  if (activeRoleSession.role === 'teacher') {
+    const activeTeacher =
+      staffList.find((s) => s.id === activeRoleSession.staffId) || staffList[0];
+
+    if (!activeTeacher) {
+      return (
+        <LoginSelectionScreen
+          instituteConfig={instituteConfig}
+          securityConfig={securityConfig}
+          staffList={staffList}
+          students={students}
+          onVerifyAdminPassword={handleVerifyAdminPassword}
+          onAdminAuthenticated={handleCompleteAdminLogin}
+          onTeacherAuthenticated={handleTeacherAuthenticated}
+          onStudentAuthenticated={handleStudentAuthenticated}
+          onSecurityLog={addSecurityLog}
+        />
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 print:bg-white">
+        <div className={isPrintModalActive ? 'no-print' : ''}>
+          <TeacherDashboard
+            staff={activeTeacher}
+            instituteConfig={instituteConfig}
+            batches={batches}
+            students={students}
+            feePlans={feePlans}
+            notices={notices}
+            feeReminderSettings={feeReminderSettings}
+            onRecordAttendance={handleRecordAttendance}
+            onAddNotice={handleAddNotice}
+            onPrintNotice={(notice) => setSelectedPrintNotice(notice)}
+            onOpenPdfExport={setPdfExportRequest}
+            onLogout={handleSwitchLoginRole}
+          />
+        </div>
+        <PrintNoticeModal
+          notice={selectedPrintNotice}
+          instituteConfig={instituteConfig}
+          onClose={() => setSelectedPrintNotice(null)}
+        />
+        <PrintPdfExportModal
+          request={pdfExportRequest}
+          allStudents={students}
+          feePlans={feePlans}
+          instituteConfig={instituteConfig}
+          onClose={() => setPdfExportRequest(null)}
+        />
+      </div>
+    );
+  }
+
+  // 3. Role-Based Student Dashboard
+  if (activeRoleSession.role === 'student') {
+    const activeStudent = students.find((s) => s.id === activeRoleSession.studentId);
+
+    return (
+      <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 print:bg-white">
+        <div className={isPrintModalActive ? 'no-print flex-1 flex flex-col' : 'flex-1 flex flex-col'}>
+          <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <h1 className="font-display text-base sm:text-lg font-extrabold text-slate-900 truncate">
+                  Shiksha Niketan · Student Portal
+                </h1>
+                <p className="text-xs text-slate-500 truncate">
+                  {activeStudent
+                    ? `${activeStudent.studentName} · ${activeStudent.studentIdCode} · ${activeStudent.classLevel}`
+                    : 'Enrolled Student Session'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleSwitchLoginRole}
+                className="min-h-[40px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Switch Login</span>
+              </button>
+            </div>
+          </header>
+
+          <main className="flex-1">
+            <StudentPortal
+              students={students}
+              batches={batches}
+              staffList={staffList}
+              feePlans={feePlans}
+              instituteConfig={instituteConfig}
+              securityConfig={securityConfig}
+              feeReminders={feeReminders}
+              feeReminderSettings={feeReminderSettings}
+              onAcknowledgeReminder={handleAcknowledgeReminder}
+              onSetStudentPassword={handleSetStudentPortalPassword}
+              onSecurityLog={addSecurityLog}
+              onRecordFeePayment={handleRecordFeePayment}
+              onRecordAttendance={handleRecordAttendance}
+              onOpenPdfExport={setPdfExportRequest}
+              initialLoggedInStudentId={activeRoleSession.studentId}
+              initialVerifiedMethod={activeRoleSession.method}
+              onExternalLogout={handleSwitchLoginRole}
+            />
+          </main>
+        </div>
+
+        <PrintNoticeModal
+          notice={selectedPrintNotice}
+          instituteConfig={instituteConfig}
+          onClose={() => setSelectedPrintNotice(null)}
+        />
+        <PrintPdfExportModal
+          request={pdfExportRequest}
+          allStudents={students}
+          feePlans={feePlans}
+          instituteConfig={instituteConfig}
+          onClose={() => setPdfExportRequest(null)}
+        />
+      </div>
+    );
+  }
+
+  // 4. Role-Based Administrator Full Management Suite
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 print:bg-white">
+    <div className="min-h-screen flex flex-col dash-themed-canvas text-slate-800 print:bg-white">
       <div className={isPrintModalActive ? 'no-print flex-1 flex flex-col' : 'flex-1 flex flex-col'}>
         {/* Top Urgent Notice Ticker */}
         <UrgentTicker
@@ -1420,6 +2073,7 @@ export default function App() {
         isAdmin={isAdmin}
         onOpenAdmin={(tab) => openAdminSuite(tab || 'branding')}
         onLogoutAdmin={handleAdminLogout}
+        onSwitchLoginRole={handleSwitchLoginRole}
         noticeCount={notices.length}
         enrolledStudentCount={totalEnrolledCount}
         activeMainSection={activeMainSection}
@@ -1429,10 +2083,13 @@ export default function App() {
       />
 
       {/* Workspace Section Switcher Bar (Organizes all sections + sub-sections to minimize scrolling) */}
-      <div className="bg-slate-900 text-white border-b border-slate-800 py-2 px-4 no-print">
+      <div className="dash-themed-bar text-white border-b py-2 px-4 no-print">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider mr-1">
+            <span
+              className="text-[11px] font-bold uppercase tracking-wider mr-1"
+              style={{ color: activeThemePreset.barLabelText }}
+            >
               Sections:
             </span>
             <button
@@ -1440,9 +2097,14 @@ export default function App() {
               onClick={() => navigateToSection('home')}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeMainSection === 'home'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                  ? 'text-white shadow-xs'
+                  : 'bg-white/10 text-slate-200 hover:bg-white/20 hover:text-white'
               }`}
+              style={
+                activeMainSection === 'home'
+                  ? { backgroundColor: activeThemePreset.accentHex }
+                  : undefined
+              }
             >
               <Building2 className="w-3.5 h-3.5" />
               <span>1. Overview</span>
@@ -1453,9 +2115,14 @@ export default function App() {
               onClick={() => navigateToSection('student-dashboard')}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeMainSection === 'student-dashboard'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-slate-800 text-amber-300 hover:bg-slate-700 hover:text-white border border-amber-500/30'
+                  ? 'text-white shadow-xs'
+                  : 'bg-white/10 text-amber-200 hover:bg-white/20 hover:text-white border border-amber-400/30'
               }`}
+              style={
+                activeMainSection === 'student-dashboard'
+                  ? { backgroundColor: activeThemePreset.accentHex }
+                  : undefined
+              }
             >
               <LayoutDashboard className="w-3.5 h-3.5" />
               <span>2. Student Dashboard (Class-Wise)</span>
@@ -1466,9 +2133,14 @@ export default function App() {
               onClick={() => navigateToSection('student-portal')}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeMainSection === 'student-portal'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                  ? 'text-white shadow-xs'
+                  : 'bg-white/10 text-slate-200 hover:bg-white/20 hover:text-white'
               }`}
+              style={
+                activeMainSection === 'student-portal'
+                  ? { backgroundColor: activeThemePreset.accentHex }
+                  : undefined
+              }
             >
               <GraduationCap className="w-3.5 h-3.5" />
               <span>3. Student Portal</span>
@@ -1479,9 +2151,14 @@ export default function App() {
               onClick={() => navigateToSection('batches')}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeMainSection === 'batches'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                  ? 'text-white shadow-xs'
+                  : 'bg-white/10 text-slate-200 hover:bg-white/20 hover:text-white'
               }`}
+              style={
+                activeMainSection === 'batches'
+                  ? { backgroundColor: activeThemePreset.accentHex }
+                  : undefined
+              }
             >
               <BookOpen className="w-3.5 h-3.5" />
               <span>4. Batches & Staff ({batches.length})</span>
@@ -1492,9 +2169,14 @@ export default function App() {
               onClick={() => navigateToSection('enrollment')}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeMainSection === 'enrollment'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                  ? 'text-white shadow-xs'
+                  : 'bg-white/10 text-slate-200 hover:bg-white/20 hover:text-white'
               }`}
+              style={
+                activeMainSection === 'enrollment'
+                  ? { backgroundColor: activeThemePreset.accentHex }
+                  : undefined
+              }
             >
               <UserPlus className="w-3.5 h-3.5" />
               <span>
@@ -1504,12 +2186,30 @@ export default function App() {
 
             <button
               type="button"
+              onClick={() => navigateToSection('fee-slip')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                activeMainSection === 'fee-slip'
+                  ? 'bg-[#7a1426] text-white shadow-xs'
+                  : 'bg-white/10 text-rose-200 hover:bg-white/20 hover:text-white border border-rose-400/35'
+              }`}
+            >
+              <Receipt className="w-3.5 h-3.5" />
+              <span>Fee Payment Slip</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => navigateToSection('fee-calculator')}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeMainSection === 'fee-calculator'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                  ? 'text-white shadow-xs'
+                  : 'bg-white/10 text-slate-200 hover:bg-white/20 hover:text-white'
               }`}
+              style={
+                activeMainSection === 'fee-calculator'
+                  ? { backgroundColor: activeThemePreset.accentHex }
+                  : undefined
+              }
             >
               <Calculator className="w-3.5 h-3.5" />
               <span>6. Fees & Charity</span>
@@ -1520,23 +2220,41 @@ export default function App() {
               onClick={() => navigateToSection('notice-board')}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeMainSection === 'notice-board'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                  ? 'text-white shadow-xs'
+                  : 'bg-white/10 text-slate-200 hover:bg-white/20 hover:text-white'
               }`}
+              style={
+                activeMainSection === 'notice-board'
+                  ? { backgroundColor: activeThemePreset.accentHex }
+                  : undefined
+              }
             >
               <Bell className="w-3.5 h-3.5" />
               <span>7. Notices ({notices.length})</span>
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => openAdminSuite('theme')}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer bg-white/10 hover:bg-white/20 text-white border border-white/20 whitespace-nowrap"
+              title="Customize Dashboard Theme & Interactive Look"
+            >
+              <Palette
+                className="w-3.5 h-3.5"
+                style={{ color: activeThemePreset.barLabelText }}
+              />
+              <span>Theme: {activeThemePreset.name}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => openAdminSuite('backup-sync')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border whitespace-nowrap ${
                 cloudUser
                   ? 'bg-emerald-900/80 text-emerald-200 border-emerald-600 hover:bg-emerald-800'
-                  : 'bg-slate-800 text-sky-300 border-slate-700 hover:bg-slate-700'
+                  : 'bg-white/10 text-sky-200 border-white/15 hover:bg-white/20'
               }`}
               title="Open Online Cloud Sync, Backup & Restore"
             >
@@ -1555,10 +2273,10 @@ export default function App() {
               onClick={() =>
                 navigateToSection(activeMainSection === 'all' ? 'home' : 'all')
               }
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
                 activeMainSection === 'all'
                   ? 'bg-amber-500 text-slate-950'
-                  : 'bg-slate-800 text-amber-300 hover:bg-slate-700 border border-slate-700'
+                  : 'bg-white/10 text-amber-200 hover:bg-white/20 border border-white/15'
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
@@ -1609,6 +2327,24 @@ export default function App() {
             onDisenrollStudent={handleDisenrollStudent}
             onReEnrollStudent={handleReEnrollStudent}
             onOpenPdfExport={setPdfExportRequest}
+            onOpenFeeSlipForStudent={(studentId) => {
+              setSelectedSlipStudentId(studentId);
+              navigateToSection('fee-slip');
+            }}
+          />
+        )}
+
+        {/* 2B. Dynamic Official Tuition Fee Payment Slip (Synchronized with Student Ledger) */}
+        {(activeMainSection === 'fee-slip' || activeMainSection === 'all') && (
+          <FeePaymentSlipSection
+            students={students}
+            batches={batches}
+            feePlans={feePlans}
+            instituteConfig={instituteConfig}
+            isAdmin={isAdmin}
+            initialStudentId={selectedSlipStudentId}
+            onRecordFeePayment={handleRecordFeePayment}
+            onEditOrCancelPayment={handleEditOrCancelPayment}
           />
         )}
 
@@ -1750,6 +2486,7 @@ export default function App() {
         feePlans={feePlans}
         onUpdateFeePlan={handleUpdateFeePlan}
         students={students}
+        onUpdateStudent={handleAddOrUpdateStudent}
         onDisenrollStudent={handleDisenrollStudent}
         onReEnrollStudent={handleReEnrollStudent}
         onDeleteStudent={handleDeleteStudent}
@@ -1790,6 +2527,14 @@ export default function App() {
           if (cloudUser) await refreshCloudMetadata(cloudUser.uid);
         }}
         onApplyRestoreBundle={applyRestoredDataBundle}
+        dashboardTheme={dashboardTheme}
+        onUpdateDashboardTheme={setDashboardTheme}
+        autoSuspensionConfig={autoSuspensionConfig}
+        onUpdateAutoSuspensionConfig={setAutoSuspensionConfig}
+        onRunAutoSuspensionScan={() =>
+          runAutoSuspensionEvaluation({ ignoreOverrides: false, manualTrigger: true })
+        }
+        onReinstateStudent={handleReinstateSuspendedStudent}
       />
     </div>
   );
