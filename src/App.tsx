@@ -1042,7 +1042,7 @@ export default function App() {
     }
   };
 
-  const handleReinstateSuspendedStudent = (studentId: string) => {
+  const handleReinstateSuspendedStudent = (studentId: string, overrideNote?: string) => {
     const target = students.find((s) => s.id === studentId);
     if (!target) return;
     const missed = computeConsecutiveMissedMonths(target, feePlans, {
@@ -1052,6 +1052,7 @@ export default function App() {
       missed.consecutiveMissedMonths >= autoSuspensionConfig.consecutiveMissedMonthsThreshold
         ? missed.consecutiveMissedMonths
         : undefined;
+    const trimmedNote = overrideNote?.trim();
 
     setStudents((prev) =>
       prev.map((s) =>
@@ -1068,8 +1069,10 @@ export default function App() {
     );
 
     addSecurityLog(
-      'Admin',
-      `Reinstated ${target.studentName} (${target.studentIdCode}) from Suspended to Enrolled${
+      'Admin (Manual Override)',
+      `Manual suspension override for ${target.studentName} (${target.studentIdCode}) — status restored to Enrolled${
+        trimmedNote ? ` · Note: ${trimmedNote}` : ''
+      }${
         overrideCount ? ` (override active until >${overrideCount} missed months)` : ''
       }`,
       'System',

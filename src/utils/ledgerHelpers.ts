@@ -933,13 +933,49 @@ export const DEFAULT_AUTO_SUSPENSION_CONFIG: AutoSuspensionConfig = {
 export interface ConsecutiveMissedSummary {
   consecutiveMissedMonths: number;
   missedMonthLabels: string[];
+  missedMonthShortLabels: string[];
+  lastMissedMonthKey: string | null;
+  lastMissedMonthLabel: string | null;
+  lastMissedPaymentIsoDate: string | null;
+  lastMissedPaymentDateLabel: string | null;
   totalMissedMonths: number;
   isExempt: boolean;
 }
 
+const SHORT_MONTH_NAMES = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec'
+];
+
+function formatMonthlyDueDateFromKey(monthKey: string, dueDay = 10): {
+  iso: string;
+  label: string;
+} {
+  const [yStr, mStr] = monthKey.split('-');
+  const mIdx = Number(mStr) - 1;
+  const paddedDay = String(Math.max(1, Math.min(28, dueDay))).padStart(2, '0');
+  const iso = `${yStr}-${mStr}-${paddedDay}`;
+  const shortMonth = SHORT_MONTH_NAMES[mIdx] || mStr;
+  return {
+    iso,
+    label: `${paddedDay} ${shortMonth} ${yStr}`
+  };
+}
+
 /**
  * Evaluates a student's live monthly ledger up through the current billing month
- * to determine how many consecutive monthly fee payments have been missed.
+ * to determine how many consecutive monthly fee payments have been missed,
+ * along with the most recent missed payment due date.
  */
 export function computeConsecutiveMissedMonths(
   stu: StudentRecord,
@@ -947,12 +983,18 @@ export function computeConsecutiveMissedMonths(
   options?: {
     includePartialAsMissed?: boolean;
     referenceMonthKey?: string;
+    monthlyDueDay?: number;
   }
 ): ConsecutiveMissedSummary {
   if (stu.isCharitySeat || stu.netMonthlyFee <= 0 || stu.enrollmentStatus === 'Disenrolled') {
     return {
       consecutiveMissedMonths: 0,
       missedMonthLabels: [],
+      missedMonthShortLabels: [],
+      lastMissedMonthKey: null,
+      lastMissedMonthLabel: null,
+      lastMissedPaymentIsoDate: null,
+      lastMissedPaymentDateLabel: null,
       totalMissedMonths: 0,
       isExempt: true
     };
@@ -960,6 +1002,7 @@ export function computeConsecutiveMissedMonths(
 
   const includePartial = Boolean(options?.includePartialAsMissed);
   const referenceMonthKey = options?.referenceMonthKey || '2026-11';
+  const monthlyDueDay = options?.monthlyDueDay || 10;
   const rows = buildMonthlyLedgerRows(stu, feePlans);
 
   const billableElapsed = rows.filter(
@@ -974,26 +1017,39 @@ export function computeConsecutiveMissedMonths(
     status === 'Pending' || (includePartial && status === 'Partially Paid');
 
   let totalMissedMonths = 0;
+  let lastMissedRow: MonthlyLedgerRow | null = null;
   for (const row of billableElapsed) {
     if (isRowMissed(row.status)) {
       totalMissedMonths += 1;
+      lastMissedRow = row;
     }
   }
 
   // Count trailing consecutive missed monthly payments walking backward from latest elapsed month
   const streakLabels: string[] = [];
+  const streakShortLabels: string[] = [];
   for (let i = billableElapsed.length - 1; i >= 0; i -= 1) {
     const row = billableElapsed[i];
     if (isRowMissed(row.status)) {
       streakLabels.unshift(row.label);
+      streakShortLabels.unshift(row.short);
     } else {
       break;
     }
   }
 
+  const dueDateInfo = lastMissedRow
+    ? formatMonthlyDueDateFromKey(lastMissedRow.key, monthlyDueDay)
+    : null;
+
   return {
     consecutiveMissedMonths: streakLabels.length,
     missedMonthLabels: streakLabels,
+    missedMonthShortLabels: streakShortLabels,
+    lastMissedMonthKey: lastMissedRow ? lastMissedRow.key : null,
+    lastMissedMonthLabel: lastMissedRow ? lastMissedRow.label : null,
+    lastMissedPaymentIsoDate: dueDateInfo ? dueDateInfo.iso : null,
+    lastMissedPaymentDateLabel: dueDateInfo ? dueDateInfo.label : null,
     totalMissedMonths,
     isExempt: false
   };

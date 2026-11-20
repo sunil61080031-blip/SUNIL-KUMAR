@@ -71,6 +71,7 @@ import {
   DashboardThemeConfig,
   getDashboardThemePreset
 } from '../utils/dashboardTheme';
+import { SuspendedStudentsDashboardTab } from './SuspendedStudentsDashboardTab';
 
 export type AdminTabType =
   | 'branding'
@@ -80,7 +81,8 @@ export type AdminTabType =
   | 'notices'
   | 'security'
   | 'backup-sync'
-  | 'theme';
+  | 'theme'
+  | 'suspended';
 
 interface AdminPortalModalProps {
   isOpen: boolean;
@@ -160,7 +162,7 @@ interface AdminPortalModalProps {
   autoSuspensionConfig: AutoSuspensionConfig;
   onUpdateAutoSuspensionConfig: (config: AutoSuspensionConfig) => void;
   onRunAutoSuspensionScan: () => { suspendedCount: number; reinstatedCount: number };
-  onReinstateStudent: (studentId: string) => void;
+  onReinstateStudent: (studentId: string, overrideNote?: string) => void;
 }
 
 export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
@@ -1450,7 +1452,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
 
                 <button
                   onClick={() => setActiveTab('theme')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     activeTab === 'theme'
                       ? 'text-white shadow-xs'
                       : 'bg-white text-slate-800 border border-slate-300 hover:bg-slate-200'
@@ -1463,6 +1465,21 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 >
                   <Palette className="w-3.5 h-3.5" />
                   <span>8. Theme &amp; Look</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('suspended')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    activeTab === 'suspended'
+                      ? 'bg-amber-700 text-white shadow-xs'
+                      : 'bg-white text-amber-900 border border-amber-300 hover:bg-amber-50'
+                  }`}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <span className="tabular-nums">
+                    9. Suspended (
+                    {students.filter((s) => s.enrollmentStatus === 'Suspended').length})
+                  </span>
                 </button>
               </div>
 
@@ -3922,6 +3939,20 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 <DashboardThemeTab
                   themeConfig={dashboardTheme}
                   onUpdateTheme={onUpdateDashboardTheme}
+                  onShowToast={showToast}
+                />
+              )}
+
+              {/* TAB 9: SUSPENDED STUDENTS VISUAL DASHBOARD */}
+              {activeTab === 'suspended' && (
+                <SuspendedStudentsDashboardTab
+                  students={students}
+                  feePlans={feePlans}
+                  autoSuspensionConfig={autoSuspensionConfig}
+                  securityLogs={securityLogs}
+                  onRunAutoSuspensionScan={onRunAutoSuspensionScan}
+                  onOverrideSuspension={onReinstateStudent}
+                  onOpenPolicySettings={() => setActiveTab('security')}
                   onShowToast={showToast}
                 />
               )}
